@@ -128,18 +128,22 @@ hard ceiling; schema changes that remove/rename fields bump `kcschemaversion` (a
 | `include-*/exclude-*` filters | — | |
 | `include-ip-address` | `true` | |
 | `include-representation` | `false` | admin events |
+| `allowed-detail-keys` | — | comma list of extra `details` keys to export (exact, case-insensitive) |
+| `redacted-detail-keys` | — | comma list of `details` keys to always redact; wins over `allowed-detail-keys` |
 | `delivery-mode` | `async` | `outbox` in M3 |
 | `queue-capacity` | `10000` | async mode in-memory queue; full → drop + `dropped` metric |
 | `close-timeout-ms` | `5000` | shutdown drain budget |
 | `producer-properties-file` | — | `.properties` with any Kafka producer config (TLS/SASL secrets live here) |
-| `producer-<kafka-key-with-dashes>` | — | passthrough, e.g. `producer-security-protocol=SASL_SSL` → `security.protocol`; `--` option form only; not for `ssl.provider` (see D3) |
+| `producer-<kafka-key-with-dashes>` | — | passthrough, e.g. `producer-security-protocol=SASL_SSL` → `security.protocol`; `--` option form only; not for `ssl.provider` (see D3); unknown Kafka key → fail fast |
 
 Option names must not end in `-enabled`, `-provider` or `-provider-default`: Keycloak treats such SPI keys as
 build-time and refuses an optimized start when they're set at runtime (RESEARCH §6.1).
 
-Producer defaults we set (overridable): `acks=all`, `enable.idempotence=true`, `linger.ms=20`,
-`compression.type=none` (see D4), `max.block.ms=1000` (sender thread only), `delivery.timeout.ms=30000`,
-`client.id=keycloak-<hostname>`.
+Producer defaults we set (overridable): `acks=all`, `enable.idempotence=true` (dropped when the user sets
+`acks`/`retries` without it, so Kafka can fall back instead of rejecting), `linger.ms=20`,
+`compression.type=lz4` (D4), `max.block.ms=1000` (sender thread only), `request.timeout.ms=10000` and
+`delivery.timeout.ms=30000` (Kafka requires delivery ≥ linger + request), `client.id=keycloak-<hostname>`.
+`bootstrap.servers` always comes from `bootstrap-servers`; `key.serializer`/`value.serializer` are rejected.
 
 Invalid values (bad template, unknown mode, unparsable number) → **fail fast** at startup with a message naming
 the key. Missing bootstrap servers → **disabled**, not failed.
@@ -161,7 +165,7 @@ Record the decision + reason here when made.
 - **D3 — config passthrough.** `producer-*` passthrough via `getPropertyNames()` vs. only
   `producer-properties-file`. Verified 2026-10-19 (RESEARCH §6.1): enumeration works for env (`__` form), CLI
   and keycloak.conf; keys come back fully prefixed; dash→dot mapping is lossless for all producer keys.
-  Proposal: support **both**. Precedence: our defaults < properties file < `producer-*` options. Caveats to
+  **Decided 2026-10-19: support both, precedence defaults < file < `producer-*` options.** Caveats to
   document: `--` form only (legacy single-separator keys aren't enumerated); `ssl.provider` only via the file
   (a runtime `producer-ssl-provider` makes `start --optimized` exit). Secrets (SASL/keystore passwords) are
   better in the file, since Keycloak masks `kc.spi-*` values in `show-config` but env/CLI leak elsewhere.
@@ -188,7 +192,7 @@ Record the decision + reason here when made.
 
 - [x] Verify `Config.Scope.getPropertyNames()` behaviour under Quarkus (env + CLI keys) and how
       `getConfigMetadata()` must declare options in 26.8.1; record result under D3 and RESEARCH §6
-- [ ] `KafkaEventsConfig` (immutable record) parsed from `Config.Scope` with validation + unit tests
+- [x] `KafkaEventsConfig` (immutable record) parsed from `Config.Scope` with validation + unit tests
 - [ ] `Envelope` model + `EnvelopeMapper` for `Event` and `AdminEvent` (redaction, representation ceiling,
       ip toggle) using `org.keycloak.util.JsonSerialization` + unit tests (golden JSON fixtures)
 - [ ] `TopicRouter` (templates, sanitization, overrides) and `KeyStrategy` + unit tests

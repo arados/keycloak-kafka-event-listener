@@ -141,6 +141,19 @@ the compose stack (`start-dev`) and in the built image with `start --optimized`.
 - Still worth implementing (`ProviderConfigurationBuilder`): it documents the options in code, costs nothing,
   and future Keycloak versions may surface it. It is not required for options to work.
 
+### 6.3 Kafka producer default pitfalls (verified 2026-10-19, kafka-clients 4.4.0 source)
+
+- `KafkaProducer.configureDeliveryTimeout`: if `delivery.timeout.ms < linger.ms + request.timeout.ms` and
+  `delivery.timeout.ms` was set **explicitly**, the constructor throws `ConfigException` (otherwise it silently
+  raises it). With `request.timeout.ms` at Kafka's default 30000, an explicit `delivery.timeout.ms=30000` plus
+  `linger.ms=20` fails → we also default `request.timeout.ms=10000` and check the sum at config time.
+- `ProducerConfig.postProcessAndValidateIdempotenceConfigs`: with `enable.idempotence` **explicitly** true,
+  `acks≠all` or `retries=0` throw; with Kafka's implicit default (true) they just disable idempotence.
+  `max.in.flight.requests.per.connection > 5` throws either way. → our explicit `enable.idempotence=true`
+  default is dropped when the user sets `acks`/`retries` without setting idempotence.
+- `ProducerConfig.configNames()` includes `config.providers`; `ConfigDef.parseType` + the key's validator can
+  type-check a single value without building a `ProducerConfig` (which would log all values).
+
 ## 7. Reference code on this machine
 
 - `../keycloak-otp` — sibling project by the same author. Patterns to reuse:
