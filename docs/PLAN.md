@@ -135,15 +135,26 @@ Serialization rules (implemented in `envelope.EnvelopeMapper`, guarded by `src/t
 - Topics: `topic-events` (default `keycloak.events`), `topic-admin-events` (default `keycloak.admin-events`).
   Both accept placeholders `{realmId}`, `{realmName}`; result sanitized to Kafka's legal chars
   `[a-zA-Z0-9._-]`, max 249 chars; invalid template → fail fast at startup.
+  Decided 2026-10-19 (`routing.TopicRouter`): templates are parsed once at construction; unknown/unbalanced
+  placeholders, blank templates, and **literal text** with illegal chars, > 249 literal chars, or a literal-only
+  `.`/`..` all fail fast — only the substituted realm values are sanitized (each illegal code point → `_`), never
+  what the operator typed. Missing realm name → realm id; missing value → `_`. A resolved topic Kafka would
+  reject (empty, `.`, `..` — only possible for a placeholder-only template) becomes `_` / `__`. Nothing is
+  cached per realm.
 - Optional `topic-overrides`: comma list `EVENT_TYPE=topic` (e.g. `LOGIN_ERROR=keycloak.security`).
 - Filters: `include-event-types` / `exclude-event-types` (user `EventType` names), `include-admin-resource-types`
   / `exclude-admin-resource-types`. Needed because Keycloak's realm "enabled event types" only filters storage.
+  Empty include = all; exclude wins; admin types compared upper case to `getResourceTypeAsString()` (covers
+  custom types); an event without a type passes only when the include set is empty (`routing.EventFilter`).
 - Key (ordering scope):
   - user event: `<realmId>:<userId>`; no userId → `<realmId>:<sessionId>`; neither → `<realmId>`.
   - admin event: `<realmId>:<first two resourcePath segments>` (e.g. `users/<id>`) so all changes to one entity
-    stay ordered.
+    stay ordered; fewer segments → the whole path; no path → `<realmId>`.
+  - empty strings count as missing; the key is never null (`routing.KeyStrategy`).
 - Headers: `content-type`, `kc-kind`, `kc-event-type`, `kc-realm-id`, `kc-schema-version` — lets consumers
-  filter without parsing.
+  filter without parsing. Values are UTF-8 strings: `application/cloudevents+json; charset=UTF-8`,
+  `user|admin`, the CloudEvents `type` (`org.keycloak.event.LOGIN`), `kcrealmid` (header omitted if absent),
+  `kcschemaversion` in decimal (`1`). Built with topic and key by `routing.EventRecordFactory`.
 
 ### Configuration (SPI scope `events-listener` / provider `kafka-events`)
 
@@ -234,8 +245,8 @@ Record the decision + reason here when made.
 - [x] `KafkaEventsConfig` (immutable record) parsed from `Config.Scope` with validation + unit tests
 - [x] `Envelope` model + `EnvelopeMapper` for `Event` and `AdminEvent` (redaction, representation ceiling,
       ip toggle) using `org.keycloak.util.JsonSerialization` + unit tests (golden JSON fixtures)
-- [ ] `TopicRouter` (templates, sanitization, overrides) and `KeyStrategy` + unit tests
-- [ ] `EventFilter` (include/exclude) + unit tests
+- [x] `TopicRouter` (templates, sanitization, overrides) and `KeyStrategy` + unit tests
+- [x] `EventFilter` (include/exclude) + unit tests
 - [ ] `KafkaSender`: bounded queue + single sender thread + producer callbacks; injectable `Producer` so unit
       tests use Kafka's `MockProducer`; never blocks `offer`
 - [ ] Provider: `EventListenerTransaction` + `enlistAfterCompletion`; rollback drops; error-event inner-session
