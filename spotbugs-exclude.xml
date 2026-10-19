@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- Add narrowly scoped exclusions here, each with a comment explaining why the finding
+         is a false positive. Never exclude a pattern project-wide. -->
+</FindBugsFilter>

@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Build and test
+        run: mvn clean verify -B
+
+      - name: Upload single JAR
+        uses: actions/upload-artifact@v7
+        with:
+          name: keycloak-kafka-events
+          path: dist/target/keycloak-kafka-events-*.jar
+          if-no-files-found: error
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Run Playwright E2E suite
+        run: mvn verify -P e2e -DskipTests -B
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          if-no-files-found: ignore
+
+      - name: Dump Keycloak and Kafka logs on failure
+        if: failure()
+        run: docker compose logs keycloak kafka || true
+
+  spotbugs:
+    # Static analysis: fast, deterministic, runs on every push so security regressions
+    # block at PR time instead of slipping in unnoticed and only being caught at release.
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: SpotBugs + Find Security Bugs
+        run: mvn compile spotbugs:check -B
+
+  dependency-check:
+    # NVD-backed CVE scan. Slow (~10+ min) and depends on an external feed, so it
+    # runs only on main and tag pushes — PRs get the fast spotbugs signal. The
+    # build fails on any finding with CVSS >= 9 (critical); lower-severity findings
+    # are still reported via the uploaded HTML report but do not block.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      # Runners start empty, so without this every run re-downloads the whole NVD
+      # database (~380k records, 10+ min). Restore the newest copy and let the plugin
+      # fetch only the delta. Each run saves under a unique key (cache entries are
+      # immutable) and the restore prefix picks the most recent one; main's caches are
+      # readable from tag runs.
+      - name: Restore NVD data cache
+        id: nvd-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.dependency-check-data
+          key: dc-data-${{ github.run_id }}
+          restore-keys: dc-data-
+
+      # nvdValidForHours skips the NVD update entirely when the restored data is
+      # fresher than that (default 4h), e.g. a tag pushed right after a main run.
+      # The Sonatype OSS Index analyzer is off: it now answers 401 without an
+      # account, which fails the whole scan. NVD remains the primary data source.
+      - name: OWASP Dependency-Check
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: >
+          mvn dependency-check:aggregate -B
+          -DnvdApiKey="$NVD_API_KEY"
+          -DdataDirectory="$HOME/.dependency-check-data"
+          -DnvdValidForHours=24
+          -DossIndexAnalyzerEnabled=false
+          -DfailBuildOnCVSS=9
+
+      # always(): a scan that fails on a finding has still done the expensive update.
+      - name: Save NVD data cache
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.dependency-check-data
+          key: dc-data-${{ github.run_id }}
+
+      - name: Upload dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.html
+          if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [build, e2e, spotbugs, dependency-check]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Derive release version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set project version
+        run: mvn versions:set -DnewVersion=${{ steps.version.outputs.value }} -DgenerateBackupPoms=false -B
+
+      - name: Build release JAR
+        run: mvn clean package -DskipTests -B
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/target/keycloak-kafka-events-*.jar
+          generate_release_notes: true
