@@ -62,11 +62,25 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Not shipped by Keycloak: bundled into the shaded JAR (see maven-shade-plugin below). -->
+        <!-- Not shipped by Keycloak: bundled into the shaded JAR (see maven-shade-plugin below).
+             Only the lz4 codec comes along (decision D4, docs/PLAN.md): zstd-jni and snappy-java are
+             mostly native libraries for ~20 platforms that they extract to java.io.tmpdir at runtime.
+             Excluded here (not just from the shade) so unit tests run without them, exactly like the
+             deployed JAR. Users who want compression.type=zstd|snappy add those JARs to providers/. -->
         <dependency>
             <groupId>org.apache.kafka</groupId>
             <artifactId>kafka-clients</artifactId>
             <version>${kafka.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.github.luben</groupId>
+                    <artifactId>zstd-jni</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.xerial.snappy</groupId>
+                    <artifactId>snappy-java</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- Test dependencies -->
@@ -112,17 +126,28 @@
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <!-- Keycloak 26.8.1 already ships slf4j-api (2.0.x), jackson and micrometer;
                                  it does NOT ship kafka-clients or the compression codecs. Bundle only
-                                 what Keycloak lacks. Re-check with the bump-keycloak skill on every
-                                 Keycloak upgrade (see docs/RESEARCH.md "Keycloak runtime libraries"). -->
+                                 what Keycloak lacks, and of the codecs only lz4 (D4; zstd-jni and
+                                 snappy-java are excluded on the dependency above). Re-check with the
+                                 bump-keycloak skill on every Keycloak upgrade (see docs/RESEARCH.md §5). -->
                             <artifactSet>
                                 <includes>
                                     <include>org.apache.kafka:kafka-clients</include>
-                                    <include>com.github.luben:zstd-jni</include>
                                     <include>at.yawk.lz4:lz4-java</include>
-                                    <include>org.xerial.snappy:snappy-java</include>
                                 </includes>
                             </artifactSet>
                             <filters>
+                                <!-- lz4-java's JNI libraries are unreachable under Keycloak: its
+                                     LZ4Factory/XXHashFactory.fastestInstance() only try JNI when the
+                                     library sits on the system classloader (providers don't), else they
+                                     use the pure-Java implementation. Dropping them means nothing is
+                                     ever extracted to java.io.tmpdir and no native code is shipped.
+                                     Details: docs/RESEARCH.md §5.1. -->
+                                <filter>
+                                    <artifact>at.yawk.lz4:lz4-java</artifact>
+                                    <excludes>
+                                        <exclude>net/jpountz/util/*/*/liblz4-java.*</exclude>
+                                    </excludes>
+                                </filter>
                                 <filter>
                                     <artifact>*:*</artifact>
                                     <excludes>
@@ -171,8 +196,8 @@
                     <configuration>
                         <failBuildOnCVSS>7</failBuildOnCVSS>
                         <!-- keycloak-* and their transitive libs are provided by the Keycloak
-                             container at runtime. kafka-clients and its compression libs are
-                             compile scope, so they ARE scanned: we ship them. -->
+                             container at runtime. kafka-clients and lz4-java are compile/runtime
+                             scope, so they ARE scanned: we ship them. -->
                         <skipProvidedScope>true</skipProvidedScope>
                         <skipTestScope>true</skipTestScope>
                         <suppressionFiles>

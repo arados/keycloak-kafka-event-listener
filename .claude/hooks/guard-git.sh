@@ -6,7 +6,8 @@
 # Emits a PreToolUse "deny" decision with the reason; exits 0 otherwise.
 set -euo pipefail
 
-cmd=$(jq -r '.tool_input.command // empty')
+input=$(cat)
+cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
 [[ -z "$cmd" ]] && exit 0
 
 deny() {
@@ -14,10 +15,16 @@ deny() {
   exit 0
 }
 
-project_dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-branch=$(git -C "$project_dir" branch --show-current 2>/dev/null || true)
+# Resolve the branch where the command runs, not where the project was opened: worktrees
+# (.claude/worktrees/*) have their own branch. Order: `git -C <dir>`, the hook's cwd, the project dir.
+git_dir=$(jq -r '.cwd // empty' <<<"$input")
+if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]\;\&\|]+) ]]; then
+  git_dir="${BASH_REMATCH[1]}"
+fi
+git_dir="${git_dir:-${CLAUDE_PROJECT_DIR:-$(pwd)}}"
+branch=$(git -C "$git_dir" branch --show-current 2>/dev/null || true)
 
-if [[ "$cmd" =~ (^|[[:space:]\;\&\|])git[[:space:]]+commit([[:space:]]|$) ]] && [[ "$branch" == "main" || "$branch" == "master" ]]; then
+if [[ "$cmd" =~ (^|[[:space:]\;\&\|])git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+commit([[:space:]]|$) ]] && [[ "$branch" == "main" || "$branch" == "master" ]]; then
   deny "Blocked by .claude/hooks/guard-git.sh: you are on '$branch'. Create a branch first (git checkout -b <type>/<topic>); main only changes through merged PRs."
 fi
 

@@ -75,7 +75,7 @@ Kafka value = UTF-8 JSON; header `content-type: application/cloudevents+json; ch
 {
   "specversion": "1.0",
   "id": "<Keycloak event id (UUID)>",          // stable; duplicates (outbox mode) keep it
-  "source": "keycloak:<realmId>",              // TODO(D2): realm id vs. issuer URL
+  "source": "https://sso.example.com/realms/demo", // realm issuer (= token iss); fallback urn:keycloak:realm:<realmId>
   "type": "org.keycloak.event.LOGIN",          // admin: "org.keycloak.admin.<RESOURCE_TYPE>.<OPERATION>"
   "time": "2026-10-19T12:34:56.789Z",          // RFC 3339 from event.getTime()
   "subject": "<userId>",                       // admin: resourcePath
@@ -88,20 +88,47 @@ Kafka value = UTF-8 JSON; header `content-type: application/cloudevents+json; ch
     // user event
     "type": "LOGIN", "clientId": "...", "userId": "...", "sessionId": "...",
     "ipAddress": "...",                        // omitted when include-ip-address=false
-    "error": null,
-    "details": { "auth_method": "openid-connect", "username": "..." }   // after redaction/allowlist
+    "error": "...",                            // error events only
+    "details": { "auth_method": "openid-connect", "token_id": "...", "username": "...", "my_ext_key": "[redacted]" }
     // admin event (instead)
     // "operationType": "CREATE", "resourceType": "USER", "resourcePath": "users/<id>",
-    // "authDetails": { "realmId": "...", "clientId": "...", "userId": "...", "ipAddress": "..." },
-    // "error": null, "details": {...},
+    // "authDetails": { "realmId": "...", "realmName": "master", "clientId": "...", "userId": "...", "ipAddress": "..." },
+    // "error": "...", "details": {...},
     // "representation": { ... }               // ONLY if includeRepresentation && include-representation=true
   }
 }
 ```
 
-Rules: never emit credentials, secrets, tokens, request bodies; redact `details` keys matching
-`(?i)(password|secret|token|credential|otp|code_verifier)`; treat Keycloak's `includeRepresentation=false` as a
-hard ceiling; schema changes that remove/rename fields bump `kcschemaversion` (a MAJOR release).
+Rules: never emit credentials, secrets, tokens, request bodies; redact `details` values (user and admin events)
+by replacing the value with `"[redacted]"` (key kept) per the policy below; treat Keycloak's
+`includeRepresentation=false` as a hard ceiling; schema changes that remove/rename fields bump `kcschemaversion`
+(a MAJOR release).
+
+`details` redaction (`envelope.DetailRedaction`; keys compared case-insensitively and **exactly**, no substring
+matching — the earlier substring regex hid 24 standard keys such as `token_id`, see RESEARCH §3.3):
+1. **Redacted** if the key is in the built-in denylist or in `redacted-detail-keys` — wins over everything.
+   Built-in denylist: `password`, `new_password`, `current_password`, `password_new`, `password_confirm`,
+   `password-new`, `password-confirm`, `secret`, `client_secret`, `secret_data`, `credential_data`, `otp`, `totp`,
+   `code_verifier`, `token`, `access_token`, `refresh_token`, `id_token`, `subject_token`, `actor_token`,
+   `client_assertion`, `assertion`, `device_code`, `pre-authorized_code` (names of credentials/bearer secrets;
+   Keycloak core sets none of them as details, they guard against extensions copying request data).
+2. **Passed through** if the key is a standard Keycloak key — every `String` constant of
+   `org.keycloak.events.Details` (read by reflection at startup, so it follows Keycloak bumps) plus the literal
+   keys Keycloak 26.8.1 core sets outside `Details` (`DetailRedaction.EXTRA_STANDARD_KEYS`, with source
+   locations) — or is in `allowed-detail-keys`.
+3. **Redacted** otherwise: unknown keys usually come from custom extensions and may hold anything. This includes
+   `previous_<attr>`/`updated_<attr>` for custom user-profile attributes; allowlist those if wanted.
+
+Serialization rules (implemented in `envelope.EnvelopeMapper`, guarded by `src/test/resources/envelope/*.json`):
+- **Null/absent fields are omitted**, never written as `null` (e.g. no `subject` for a `LOGIN_ERROR` without a
+  user, no `error` on success). Empty `details` are omitted too. Consumers must treat absent = null.
+- Field order is fixed as shown; `details` keys are sorted. Redacted entries keep their key with the value
+  `"[redacted]"`; entries with a null key or value are dropped.
+- `time` is always UTC with milliseconds (`...:00.000Z`).
+- `representation` is embedded as parsed JSON (object or array); if it doesn't parse, it is omitted. Keycloak
+  already strips secrets from it (`StripSecretsUtils`, RESEARCH §3.1).
+- The mapper is pure (no `KeycloakSession`): the provider passes `source` and `realmName` in an
+  `EnvelopeContext`; `kcrealmname` falls back to `Event/AdminEvent.getRealmName()`.
 
 ### Routing, keys, headers
 
@@ -126,10 +153,10 @@ hard ceiling; schema changes that remove/rename fields bump `kcschemaversion` (a
 | `topic-events` / `topic-admin-events` | see above | templates |
 | `topic-overrides` | — | |
 | `include-*/exclude-*` filters | — | |
-| `include-ip-address` | `true` | |
+| `include-ip-address` | `true` | `false` omits `ipAddress` from user events and admin `authDetails` |
 | `include-representation` | `false` | admin events |
-| `allowed-detail-keys` | — | comma list of extra `details` keys to export (exact, case-insensitive) |
-| `redacted-detail-keys` | — | comma list of `details` keys to always redact; wins over `allowed-detail-keys` |
+| `allowed-detail-keys` | — | comma list of extra `details` keys to pass through (custom extension keys); case-insensitive; cannot un-redact the built-in denylist |
+| `redacted-detail-keys` | — | comma list of extra `details` keys to always redact; case-insensitive; wins over standard and allowed keys |
 | `delivery-mode` | `async` | `outbox` in M3 |
 | `queue-capacity` | `10000` | async mode in-memory queue; full → drop + `dropped` metric |
 | `close-timeout-ms` | `5000` | shutdown drain budget |
@@ -158,10 +185,20 @@ Micrometer (Keycloak ships `micrometer-core`; exposed on Keycloak's metrics endp
 
 Record the decision + reason here when made.
 
-- **D1 — envelope shape.** CloudEvents structured mode (current proposal) vs. binary mode (`ce_*` headers,
-  raw `data` as value) vs. custom. Proposal: structured; revisit only with a concrete consumer need.
-- **D2 — `source` attribute.** `keycloak:<realmId>` (stable, opaque) vs. realm issuer URL (readable, changes
-  with hostname). Proposal: `keycloak:<realmId>`, issuer URL as extension later if asked.
+- **D1 — envelope shape. Decided 2026-10-19: CloudEvents 1.0 structured JSON mode** (envelope v1 above),
+  over binary mode (`ce_*` headers, raw `data` as value) or a custom shape. Reason: the whole event is
+  self-describing in the value (survives tools that drop headers, e.g. sinks/replays), it stays close to what
+  upstream Keycloak may adopt, and our `kc-*` headers still allow filtering without parsing. Revisit only
+  with a concrete consumer need.
+- **D2 — `source` attribute. Decided 2026-10-19: the realm issuer URL** — exactly the `iss` Keycloak puts in
+  tokens for that realm (`<frontend base>/realms/<realmName>`), computed in `onEvent` with `Urls.realmIssuer`;
+  fallback `urn:keycloak:realm:<realmId>` when no URL can be resolved (no HTTP context, no fixed hostname).
+  Why: matches token `iss` / OIDC discovery and distinguishes Keycloak deployments; `keycloak:<realmId>` only
+  repeats `kcrealmid`. Accepted cost: `source` changes on hostname change or realm rename and can vary per
+  request with `hostname-strict=false` — consumers partition/join on `kcrealmid`, never on `source`, and must
+  not trust `source` for authorization (README must say so). `<frontendUrl>:<realmName>` was rejected: not a
+  valid URI (realm name lands in the port position) and `frontendUrl` is unset by default. No `source-template`
+  in v1. Research: RESEARCH §3.2.
 - **D3 — config passthrough.** `producer-*` passthrough via `getPropertyNames()` vs. only
   `producer-properties-file`. Verified 2026-10-19 (RESEARCH §6.1): enumeration works for env (`__` form), CLI
   and keycloak.conf; keys come back fully prefixed; dash→dot mapping is lossless for all producer keys.
@@ -172,7 +209,9 @@ Record the decision + reason here when made.
 - **D4 — JAR size / compression codecs.** zstd-jni + snappy-java are most of the 20 MB and extract native libs
   to a temp dir at runtime (fails on read-only/noexec `/tmp` unless configured). Options: (a) keep all,
   default `compression.type=none`; (b) bundle only lz4 (pure-Java fallback) and document that zstd/snappy need
-  the extra JARs in `providers/`; (c) two artifacts (slim / full, via a shade classifier). Proposal: (b).
+  the extra JARs in `providers/`; (c) two artifacts (slim / full, via a shade classifier).
+  **Decided 2026-10-19: option (b)**, plus lz4-java's JNI libraries dropped from the JAR (unused under Keycloak's
+  classloader; RESEARCH §5.1). JAR 19.5 MB → 11.1 MB, no native code. Default `compression.type=lz4`.
 - **D5 — relocation.** Shade without relocation (current) vs. relocate `org.apache.kafka` to avoid clashing with
   another provider that bundles kafka-clients. Relocation is risky with Kafka's class-name-by-string config;
   keep unrelocated unless a clash is reported.
@@ -193,22 +232,25 @@ Record the decision + reason here when made.
 - [x] Verify `Config.Scope.getPropertyNames()` behaviour under Quarkus (env + CLI keys) and how
       `getConfigMetadata()` must declare options in 26.8.1; record result under D3 and RESEARCH §6
 - [x] `KafkaEventsConfig` (immutable record) parsed from `Config.Scope` with validation + unit tests
-- [ ] `Envelope` model + `EnvelopeMapper` for `Event` and `AdminEvent` (redaction, representation ceiling,
+- [x] `Envelope` model + `EnvelopeMapper` for `Event` and `AdminEvent` (redaction, representation ceiling,
       ip toggle) using `org.keycloak.util.JsonSerialization` + unit tests (golden JSON fixtures)
 - [ ] `TopicRouter` (templates, sanitization, overrides) and `KeyStrategy` + unit tests
 - [ ] `EventFilter` (include/exclude) + unit tests
 - [ ] `KafkaSender`: bounded queue + single sender thread + producer callbacks; injectable `Producer` so unit
       tests use Kafka's `MockProducer`; never blocks `offer`
 - [ ] Provider: `EventListenerTransaction` + `enlistAfterCompletion`; rollback drops; error-event inner-session
-      path covered by a test
+      path covered by a test; compute `source` per D2 (realm issuer from the *event* realm, fallback URN; never
+      throw) and cover user, error, brute-force and admin (incl. realm CREATE/DELETE) paths
 - [ ] Factory lifecycle: disabled-when-unconfigured, fail-fast on invalid config, `postInit` creates sender,
-      `close()` drains with timeout; classloader-safe producer creation
+      `close()` drains with timeout; classloader-safe producer creation; `compression.type=zstd|snappy` without
+      the codec JAR → fail at startup naming the JAR to add to `providers/` (Kafka itself only throws an opaque
+      `NoClassDefFoundError` from the producer constructor — RESEARCH §5.1)
 - [ ] E2E: login → record on `keycloak.events` (key, headers, envelope fields); wrong password →
       `LOGIN_ERROR`; admin create user → `keycloak.admin-events`; verify `consumeTopic` output column order
       (headers/key/value) and fix `helpers.js` if needed
 - [ ] E2E: `docker compose stop kafka` → login still 200 and fast (< 500 ms) → `start kafka`
 - [ ] README: install, config table, envelope example, guarantees, compatibility matrix
-- [ ] Resolve D1, D2, D4 (at least provisionally) before tagging `0.1.0`
+- [ ] Resolve D1, D2 (at least provisionally) before tagging `0.1.0` (D4 decided)
 
 ### M2 — Hardening
 
@@ -216,10 +258,11 @@ Record the decision + reason here when made.
 - [ ] Micrometer metrics + e2e scrape check (`KC_METRICS_ENABLED=true`)
 - [ ] Rate-limited failure logging (one WARN per N seconds with counts)
 - [ ] Topic overrides + filters e2e
+- [ ] E2E for the README "Compression" recipe: zstd-jni in `providers/` + `compression.type=zstd` publishes
 - [ ] Declare options in `getConfigMetadata()` for documentation (26.8.1 doesn't display it for event listeners,
       and `show-config` already lists every `kc.spi-*` key masked — RESEARCH §6.2)
 - [ ] Load sanity: 1k logins/s locally with Kafka down → no latency regression, bounded memory
-- [ ] SpotBugs clean, dependency-check clean (we ship kafka-clients + codecs)
+- [ ] SpotBugs clean, dependency-check clean (we ship kafka-clients + lz4-java)
 
 ### M3 — Optional at-least-once (`delivery-mode=outbox`)
 

@@ -32,7 +32,7 @@ especially `otp-login`'s after-commit async delivery (`enlistAfterCompletion` �
 ## Project Structure
 
 ```
-pom.xml     — the only Maven module; maven-shade-plugin bundles kafka-clients + codecs; `e2e` profile
+pom.xml     — the only Maven module; maven-shade-plugin bundles kafka-clients + lz4-java (no native libs, D4); `e2e` profile
 src/        — EventListenerProvider(+Factory), config, envelope, routing, sender; unit tests
 e2e/        — Playwright tests against the docker compose stack (plain npm project, run by the `e2e` profile)
 docs/       — PLAN.md (work plan), RESEARCH.md (verified background)
@@ -81,8 +81,9 @@ These are the invariants every change must keep. Details and rationale in PLAN.m
   must not add measurable latency to logins.
 - **Publish only committed events** (async mode): buffer in Keycloak's `EventListenerTransaction`, enlisted via
   `session.getTransactionManager().enlistAfterCompletion(...)`; rollback discards.
-- **Do session work on the request thread.** Anything needing `KeycloakSession` / `RealmModel` (realm name,
-  etc.) happens in `onEvent`; the after-commit callback and sender thread must not touch the session.
+- **Do session work inside `onEvent`.** Anything needing `KeycloakSession` / `RealmModel` (issuer URL for
+  `source`, etc.) happens in `onEvent` — usually the request thread, but brute-force lockout events arrive on
+  Keycloak's `bruteforce` executor; the after-commit callback and sender thread must not touch the session.
 - **Envelope is a public contract.** CloudEvents-shaped JSON with `kcschemaversion`. Removing/renaming fields
   = new schema version + MAJOR release. Golden-fixture tests guard it.
 - **No secrets, ever.** Never export credentials, tokens, secrets, request bodies; redact sensitive `details`
@@ -90,8 +91,9 @@ These are the invariants every change must keep. Details and rationale in PLAN.m
   `include-representation=true` is configured. Never log payloads.
 - **Unconfigured = disabled, misconfigured = fail fast.** Missing `bootstrap-servers` → single WARN, no-op.
   Invalid values → startup error naming the key.
-- **Bundle only what Keycloak lacks** (kafka-clients + codecs). Keycloak provides slf4j, jackson, micrometer —
-  never shade those. Re-check on Keycloak bumps (`bump-keycloak` skill).
+- **Bundle only what Keycloak lacks**: kafka-clients + lz4-java (classes only; its JNI libs are filtered out).
+  zstd-jni/snappy-java are deliberately not bundled (D4) — users add them to `providers/`. Keycloak provides
+  slf4j, jackson, micrometer — never shade those. Re-check on Keycloak bumps (`bump-keycloak` skill).
 - **Producer creation is classloader-safe**: pass serializer instances; set the TCCL to the plugin classloader
   while constructing the producer.
 - Keycloak internals (`model/jpa` outbox, `server-spi-private`) are allowed but must be isolated behind our own
@@ -118,11 +120,11 @@ npm ci → playwright → down; exit code recorded in `target/e2e-exit-code.txt`
 - **e2e**: `mvn verify -P e2e -DskipTests`, uploads Playwright report and dumps Keycloak + Kafka logs on failure
 - **spotbugs**: SpotBugs + Find Security Bugs on every push/PR
 - **dependency-check**: OWASP NVD scan on main/tags only (needs `NVD_API_KEY` secret), fails on CVSS ≥ 9.
-  This matters more here than in keycloak-otp: we **ship** kafka-clients and native codec libraries.
+  This matters more here than in keycloak-otp: we **ship** kafka-clients and lz4-java.
 - **release**: on `v*` tag, builds and publishes the JAR as a GitHub Release
 
 Exclusions: `spotbugs-exclude.xml` (narrow, commented); `dependency-check-suppressions.xml` (only the
-Keycloak CPE name-collision false positive — never suppress kafka-clients/codec findings without analysis).
+Keycloak CPE name-collision false positive — never suppress kafka-clients/lz4-java findings without analysis).
 
 ## Versioning & Releases
 
