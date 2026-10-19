@@ -20,10 +20,11 @@
       "code_id": "9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
       "code_verifier": "[redacted]",
       "grant_type": "authorization_code",
-      "refresh_token_id": "[redacted]",
-      "refresh_token_type": "[redacted]",
+      "refresh_token_id": "7b6c5d4e-3f2a-4b1c-8d9e-0f1a2b3c4d5e",
+      "refresh_token_type": "Refresh",
       "scope": "openid profile email",
-      "token_id": "[redacted]"
+      "token_id": "6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d",
+      "x_custom_extension_note": "[redacted]"
     }
   }
 }

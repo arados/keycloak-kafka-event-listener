@@ -18,7 +18,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -87,9 +87,10 @@ class EnvelopeMapperTest {
                 "refresh_token_id", "7b6c5d4e-3f2a-4b1c-8d9e-0f1a2b3c4d5e",
                 "code_id", SESSION_ID,
                 "client_auth_method", "client-secret",
-                "code_verifier", "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"));
+                "code_verifier", "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+                "x_custom_extension_note", "set by a custom authenticator"));
         EnvelopeMapper noIp = new EnvelopeMapper(
-                new EnvelopeOptions(false, false, EnvelopeOptions.DEFAULT_REDACTED_DETAIL_KEYS));
+                new EnvelopeOptions(false, false, DetailRedaction.DEFAULTS));
 
         assertMatchesFixture(noIp.map(event, CONTEXT), "user-redacted-no-ip.json");
     }
@@ -105,7 +106,7 @@ class EnvelopeMapperTest {
     @Test
     void adminCreateUserWithRepresentationMatchesGoldenFixture() throws IOException {
         EnvelopeMapper withRepresentation = new EnvelopeMapper(
-                new EnvelopeOptions(true, true, EnvelopeOptions.DEFAULT_REDACTED_DETAIL_KEYS));
+                new EnvelopeOptions(true, true, DetailRedaction.DEFAULTS));
 
         Envelope envelope = withRepresentation.map(adminCreateUser(), true, CONTEXT);
 
@@ -135,7 +136,7 @@ class EnvelopeMapperTest {
         event.setError("some_error");
         event.setDetails(details("k", "v"));
         EnvelopeMapper withRepresentation = new EnvelopeMapper(
-                new EnvelopeOptions(true, true, EnvelopeOptions.DEFAULT_REDACTED_DETAIL_KEYS));
+                new EnvelopeOptions(true, true, DetailRedaction.DEFAULTS));
 
         JsonNode data = toTree(withRepresentation.map(event, true, CONTEXT)).get("data");
 
@@ -238,56 +239,59 @@ class EnvelopeMapperTest {
     }
 
     @Test
-    void optionsRequireRedactionPattern() {
+    void optionsRequireDetailRedaction() {
         assertThrows(NullPointerException.class, () -> new EnvelopeOptions(true, false, null));
     }
 
-    // ---- redaction ----
+    // ---- redaction (policy details in DetailRedactionTest) ----
 
     @ParameterizedTest
     @ValueSource(strings = {
-            "password", "PASSWORD_confirm", "client_secret", "Secret", "access_token", "token_id",
-            "credential_type", "otp", "totp_code", "code_verifier", "CODE_VERIFIER"})
-    void defaultRuleRedactsSensitiveKeys(String key) {
-        Event event = userEvent("id-1", EventType.LOGIN, "2026-10-19T12:34:56.789Z");
-        event.setDetails(details(key, "sensitive-value"));
-
-        Envelope.UserData data = (Envelope.UserData) defaults.map(event, CONTEXT).data();
-
-        assertThat(data.details().get(key), equalTo(EnvelopeMapper.REDACTED));
+            "password", "PASSWORD_confirm", "client_secret", "Secret", "access_token", "otp", "totp",
+            "code_verifier", "CODE_VERIFIER"})
+    void defaultPolicyRedactsDenylistedKeys(String key) {
+        assertThat(userDetailsAfterMapping(defaults, key), equalTo(EnvelopeMapper.REDACTED));
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"username", "auth_method", "redirect_uri", "code_id", "grant_type", "scope"})
-    void defaultRuleKeepsOrdinaryKeys(String key) {
-        Event event = userEvent("id-1", EventType.LOGIN, "2026-10-19T12:34:56.789Z");
-        event.setDetails(details(key, "value"));
+    @ValueSource(strings = {
+            "username", "auth_method", "redirect_uri", "code_id", "grant_type", "scope", "token_id",
+            "refresh_token_id", "token_type", "credential_type", "credential_id", "access_token_expiration_time"})
+    void defaultPolicyKeepsStandardKeycloakKeys(String key) {
+        assertThat(userDetailsAfterMapping(defaults, key), equalTo("value"));
+    }
 
-        Envelope.UserData data = (Envelope.UserData) defaults.map(event, CONTEXT).data();
-
-        assertThat(data.details().get(key), equalTo("value"));
+    @ParameterizedTest
+    @ValueSource(strings = {"custom_note", "totp_code", "x-api-key", "previous_phone"})
+    void defaultPolicyRedactsUnknownKeys(String key) {
+        assertThat(userDetailsAfterMapping(defaults, key), equalTo(EnvelopeMapper.REDACTED));
     }
 
     @Test
-    void customRedactionRuleIsApplied() {
+    void configuredAllowedAndRedactedKeysAreApplied() {
         Event event = userEvent("id-1", EventType.LOGIN, "2026-10-19T12:34:56.789Z");
-        event.setDetails(details("username", "testuser", "token_id", "abc"));
-        EnvelopeMapper custom = new EnvelopeMapper(new EnvelopeOptions(true, false, Pattern.compile("^username$")));
+        event.setDetails(details(
+                "username", "testuser", "token_id", "abc", "custom_note", "hello", "Custom_Ref", "r-1"));
+        EnvelopeMapper custom = new EnvelopeMapper(new EnvelopeOptions(true, false,
+                new DetailRedaction(Set.of("custom_note", "custom_ref"), Set.of("username"))));
 
         Envelope.UserData data = (Envelope.UserData) custom.map(event, CONTEXT).data();
 
         assertThat(data.details().get("username"), equalTo(EnvelopeMapper.REDACTED));
         assertThat(data.details().get("token_id"), equalTo("abc"));
+        assertThat(data.details().get("custom_note"), equalTo("hello"));
+        assertThat(data.details().get("Custom_Ref"), equalTo("r-1"));
     }
 
     @Test
     void adminDetailsAreRedactedToo() {
         AdminEvent event = adminCreateUser();
-        event.setDetails(details("new_password", "hunter2", "reason", "reset"));
+        event.setDetails(details("new_password", "hunter2", "reason", "reset", "custom_note", "hello"));
 
         Envelope.AdminData data = (Envelope.AdminData) defaults.map(event, false, CONTEXT).data();
 
         assertThat(data.details().get("new_password"), equalTo(EnvelopeMapper.REDACTED));
+        assertThat(data.details().get("custom_note"), equalTo(EnvelopeMapper.REDACTED));
         assertThat(data.details().get("reason"), equalTo("reset"));
     }
 
@@ -317,7 +321,7 @@ class EnvelopeMapperTest {
     @Test
     void ipAddressIsOmittedFromAdminAuthDetailsWhenDisabled() throws IOException {
         EnvelopeMapper noIp = new EnvelopeMapper(
-                new EnvelopeOptions(false, false, EnvelopeOptions.DEFAULT_REDACTED_DETAIL_KEYS));
+                new EnvelopeOptions(false, false, DetailRedaction.DEFAULTS));
 
         JsonNode authDetails = toTree(noIp.map(adminCreateUser(), false, CONTEXT)).get("data").get("authDetails");
 
@@ -338,7 +342,7 @@ class EnvelopeMapperTest {
     @Test
     void representationIsOmittedWhenKeycloakDidNotIncludeIt() {
         EnvelopeMapper withRepresentation = new EnvelopeMapper(
-                new EnvelopeOptions(true, true, EnvelopeOptions.DEFAULT_REDACTED_DETAIL_KEYS));
+                new EnvelopeOptions(true, true, DetailRedaction.DEFAULTS));
 
         Envelope.AdminData data = (Envelope.AdminData) withRepresentation.map(adminCreateUser(), false, CONTEXT).data();
 
@@ -358,7 +362,7 @@ class EnvelopeMapperTest {
         AdminEvent event = adminCreateUser();
         event.setRepresentation(representation);
         EnvelopeMapper withRepresentation = new EnvelopeMapper(
-                new EnvelopeOptions(true, true, EnvelopeOptions.DEFAULT_REDACTED_DETAIL_KEYS));
+                new EnvelopeOptions(true, true, DetailRedaction.DEFAULTS));
 
         JsonNode data = toTree(withRepresentation.map(event, true, CONTEXT)).get("data");
 
@@ -371,7 +375,7 @@ class EnvelopeMapperTest {
         AdminEvent event = adminCreateUser();
         event.setRepresentation("[{\"name\":\"offline_access\"}]");
         EnvelopeMapper withRepresentation = new EnvelopeMapper(
-                new EnvelopeOptions(true, true, EnvelopeOptions.DEFAULT_REDACTED_DETAIL_KEYS));
+                new EnvelopeOptions(true, true, DetailRedaction.DEFAULTS));
 
         JsonNode representation = toTree(withRepresentation.map(event, true, CONTEXT)).get("data").get("representation");
 
@@ -415,6 +419,13 @@ class EnvelopeMapperTest {
     }
 
     // ---- helpers ----
+
+    /** Maps a LOGIN event whose only detail is {@code key=value} and returns that detail's emitted value. */
+    private static String userDetailsAfterMapping(EnvelopeMapper mapper, String key) {
+        Event event = userEvent("id-1", EventType.LOGIN, "2026-10-19T12:34:56.789Z");
+        event.setDetails(details(key, "value"));
+        return ((Envelope.UserData) mapper.map(event, CONTEXT).data()).details().get(key);
+    }
 
     private static Event userEvent(String id, EventType type, String time) {
         Event event = new Event();

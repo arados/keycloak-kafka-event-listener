@@ -21,11 +21,11 @@ import org.keycloak.util.JsonSerialization;
  * <p>Pure: it reads only its arguments and never touches {@code KeycloakSession} / {@code RealmModel}, so it
  * can be called anywhere and tested without Keycloak. It never mutates the input event. Thread-safe.
  *
- * <p>Secrets: {@code details} values whose key matches {@link EnvelopeOptions#redactedDetailKeys()} are
- * replaced by {@link #REDACTED} (the key is kept so consumers can see the detail existed). Admin
- * {@code representation} is emitted only when Keycloak passed {@code includeRepresentation=true} <em>and</em>
- * {@link EnvelopeOptions#includeRepresentation()} is set; a representation that does not parse as JSON is
- * omitted rather than emitted as a string.
+ * <p>Secrets: {@code details} values are replaced by {@link #REDACTED} when
+ * {@link DetailRedaction#isRedacted(String)} says so for their key (denylisted and unknown keys); the key is
+ * kept so consumers can see the detail existed. Admin {@code representation} is emitted only when Keycloak
+ * passed {@code includeRepresentation=true} <em>and</em> {@link EnvelopeOptions#includeRepresentation()} is
+ * set; a representation that does not parse as JSON is omitted rather than emitted as a string.
  */
 public final class EnvelopeMapper {
 
@@ -145,7 +145,7 @@ public final class EnvelopeMapper {
             if (key == null || entry.getValue() == null) {
                 continue;
             }
-            out.put(key, options.redactedDetailKeys().matcher(key).find() ? REDACTED : entry.getValue());
+            out.put(key, options.detailRedaction().isRedacted(key) ? REDACTED : entry.getValue());
         }
         return out.isEmpty() ? null : out;
     }

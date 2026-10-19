@@ -89,7 +89,7 @@ Kafka value = UTF-8 JSON; header `content-type: application/cloudevents+json; ch
     "type": "LOGIN", "clientId": "...", "userId": "...", "sessionId": "...",
     "ipAddress": "...",                        // omitted when include-ip-address=false
     "error": "...",                            // error events only
-    "details": { "auth_method": "openid-connect", "token_id": "[redacted]", "username": "..." }
+    "details": { "auth_method": "openid-connect", "token_id": "...", "username": "...", "my_ext_key": "[redacted]" }
     // admin event (instead)
     // "operationType": "CREATE", "resourceType": "USER", "resourcePath": "users/<id>",
     // "authDetails": { "realmId": "...", "realmName": "master", "clientId": "...", "userId": "...", "ipAddress": "..." },
@@ -99,15 +99,31 @@ Kafka value = UTF-8 JSON; header `content-type: application/cloudevents+json; ch
 }
 ```
 
-Rules: never emit credentials, secrets, tokens, request bodies; redact `details` keys matching
-`(?i)(password|secret|token|credential|otp|code_verifier)` (substring, case-insensitive) by replacing the value
-with `"[redacted]"` (key kept); treat Keycloak's `includeRepresentation=false` as a hard ceiling; schema changes
-that remove/rename fields bump `kcschemaversion` (a MAJOR release).
+Rules: never emit credentials, secrets, tokens, request bodies; redact `details` values (user and admin events)
+by replacing the value with `"[redacted]"` (key kept) per the policy below; treat Keycloak's
+`includeRepresentation=false` as a hard ceiling; schema changes that remove/rename fields bump `kcschemaversion`
+(a MAJOR release).
+
+`details` redaction (`envelope.DetailRedaction`; keys compared case-insensitively and **exactly**, no substring
+matching — the earlier substring regex hid 24 standard keys such as `token_id`, see RESEARCH §3.3):
+1. **Redacted** if the key is in the built-in denylist or in `redacted-detail-keys` — wins over everything.
+   Built-in denylist: `password`, `new_password`, `current_password`, `password_new`, `password_confirm`,
+   `password-new`, `password-confirm`, `secret`, `client_secret`, `secret_data`, `credential_data`, `otp`, `totp`,
+   `code_verifier`, `token`, `access_token`, `refresh_token`, `id_token`, `subject_token`, `actor_token`,
+   `client_assertion`, `assertion`, `device_code`, `pre-authorized_code` (names of credentials/bearer secrets;
+   Keycloak core sets none of them as details, they guard against extensions copying request data).
+2. **Passed through** if the key is a standard Keycloak key — every `String` constant of
+   `org.keycloak.events.Details` (read by reflection at startup, so it follows Keycloak bumps) plus the literal
+   keys Keycloak 26.8.1 core sets outside `Details` (`DetailRedaction.EXTRA_STANDARD_KEYS`, with source
+   locations) — or is in `allowed-detail-keys`.
+3. **Redacted** otherwise: unknown keys usually come from custom extensions and may hold anything. This includes
+   `previous_<attr>`/`updated_<attr>` for custom user-profile attributes; allowlist those if wanted.
 
 Serialization rules (implemented in `envelope.EnvelopeMapper`, guarded by `src/test/resources/envelope/*.json`):
 - **Null/absent fields are omitted**, never written as `null` (e.g. no `subject` for a `LOGIN_ERROR` without a
   user, no `error` on success). Empty `details` are omitted too. Consumers must treat absent = null.
-- Field order is fixed as shown; `details` keys are sorted.
+- Field order is fixed as shown; `details` keys are sorted. Redacted entries keep their key with the value
+  `"[redacted]"`; entries with a null key or value are dropped.
 - `time` is always UTC with milliseconds (`...:00.000Z`).
 - `representation` is embedded as parsed JSON (object or array); if it doesn't parse, it is omitted. Keycloak
   already strips secrets from it (`StripSecretsUtils`, RESEARCH §3.1).
@@ -137,8 +153,10 @@ Serialization rules (implemented in `envelope.EnvelopeMapper`, guarded by `src/t
 | `topic-events` / `topic-admin-events` | see above | templates |
 | `topic-overrides` | — | |
 | `include-*/exclude-*` filters | — | |
-| `include-ip-address` | `true` | |
+| `include-ip-address` | `true` | `false` omits `ipAddress` from user events and admin `authDetails` |
 | `include-representation` | `false` | admin events |
+| `allowed-detail-keys` | — | comma list of extra `details` keys to pass through (custom extension keys); case-insensitive; cannot un-redact the built-in denylist |
+| `redacted-detail-keys` | — | comma list of extra `details` keys to always redact; case-insensitive; wins over standard and allowed keys |
 | `delivery-mode` | `async` | `outbox` in M3 |
 | `queue-capacity` | `10000` | async mode in-memory queue; full → drop + `dropped` metric |
 | `close-timeout-ms` | `5000` | shutdown drain budget |
