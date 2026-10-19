@@ -30,6 +30,23 @@ mvn verify -P e2e   # full build + end-to-end tests
 2. Configure the broker, e.g. `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS=kafka:9092`.
 3. In the admin console: *Realm settings → Events → Event listeners* → add `kafka-events`.
 
+## Compression
+
+The JAR bundles `kafka-clients` and the **lz4** codec only (pure Java; no native libraries are shipped or
+extracted). `lz4` is the default `compression.type`; `gzip` and `none` need nothing extra either.
+
+`zstd` and `snappy` are not bundled (they would nearly double the JAR and unpack native libraries into
+`java.io.tmpdir` at runtime). To use them, add the codec JAR that matches the bundled kafka-clients 4.4.0 to
+`/opt/keycloak/providers/` next to this JAR and run `kc.sh build`:
+
+| `compression.type` | JAR to add |
+|---|---|
+| `zstd` | [`com.github.luben:zstd-jni:1.5.7-17`](https://repo1.maven.org/maven2/com/github/luben/zstd-jni/1.5.7-17/zstd-jni-1.5.7-17.jar) |
+| `snappy` | [`org.xerial.snappy:snappy-java:1.1.10.7`](https://repo1.maven.org/maven2/org/xerial/snappy/snappy-java/1.1.10.7/snappy-java-1.1.10.7.jar) |
+
+These extract a native library to `java.io.tmpdir` on first use, so it must be writable and not mounted
+`noexec`. Setting `zstd` or `snappy` without the JAR makes the listener fail at startup.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).

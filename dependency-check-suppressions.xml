@@ -7,8 +7,9 @@
         "keycloak" because the artifactIds contain that substring. Those CVEs are in the
         Keycloak server itself, not in our plugin. Same suppression as keycloak-otp.
 
-        Do NOT suppress kafka-clients / zstd-jni / lz4-java / snappy-java findings here
-        without analysis: we ship those libraries inside the shaded JAR.
+        Do NOT suppress kafka-clients / lz4-java findings here without analysis: we ship those
+        libraries inside the shaded JAR (zstd-jni and snappy-java are no longer bundled, see
+        docs/PLAN.md D4; users who add them to providers/ own their patching).
     -->
     <suppress>
         <notes>CPE name-collision: our plugin artifacts are not Keycloak server.</notes>
