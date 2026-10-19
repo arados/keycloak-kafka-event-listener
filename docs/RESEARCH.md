@@ -300,6 +300,14 @@ the compose stack (`start-dev`) and in the built image with `start --optimized`.
   default is dropped when the user sets `acks`/`retries` without setting idempotence.
 - `ProducerConfig.configNames()` includes `config.providers`; `ConfigDef.parseType` + the key's validator can
   type-check a single value without building a `ProducerConfig` (which would log all values).
+- `KafkaProducer.send()` either throws (`KafkaException` incl. `SerializationException`, `InterruptException`,
+  producer closed) **or** reports an `ApiException` (e.g. metadata `TimeoutException` after `max.block.ms`,
+  `RecordTooLargeException`) through the callback and a failed future — never both, so counting thrown
+  exceptions and callback errors separately does not double count. When interrupted, it throws
+  `InterruptException`, which re-sets the thread's interrupt flag.
+- `KafkaProducer.close(timeout)` waits up to `timeout` for in-flight batches, then force-closes (pending
+  callbacks fail with a `KafkaException`) and joins its I/O thread **without** a timeout; that join is short in
+  practice since the forced sender just aborts batches. `close(Duration.ZERO)` force-closes immediately.
 
 ## 7. Reference code on this machine
 
