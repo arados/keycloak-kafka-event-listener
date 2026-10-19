@@ -90,7 +90,7 @@ Checked in `quay.io/keycloak/keycloak:26.8.1`, `/opt/keycloak/lib/lib/main`:
 
 Re-check on every Keycloak bump (`bump-keycloak` skill).
 
-Shaded JAR at scaffold time: `target/keycloak-kafka-events-0.1.0-SNAPSHOT.jar` ≈ 20 MB.
+Shaded JAR at scaffold time: `target/keycloak-kafka-event-listener-0.1.0-SNAPSHOT.jar` ≈ 20 MB.
 
 ## 6. Config plumbing
 

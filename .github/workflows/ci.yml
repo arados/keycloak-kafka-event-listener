@@ -29,8 +29,8 @@ jobs:
       - name: Upload single JAR
         uses: actions/upload-artifact@v7
         with:
-          name: keycloak-kafka-events
-          path: target/keycloak-kafka-events-*.jar
+          name: keycloak-kafka-event-listener
+          path: target/keycloak-kafka-event-listener-*.jar
           if-no-files-found: error
 
   e2e:
@@ -179,5 +179,5 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: target/keycloak-kafka-events-*.jar
+          files: target/keycloak-kafka-event-listener-*.jar
           generate_release_notes: true

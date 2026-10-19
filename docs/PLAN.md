@@ -231,6 +231,7 @@ Record the decision + reason here when made.
 
 ### M4 — Publish
 
-- [ ] Create GitHub repo `arados/keycloak-kafka-events` (ask the user), push, enable Actions, add
-      `NVD_API_KEY` secret
+- [ ] Create GitHub repo `arados/keycloak-kafka-event-listener` (created by the user 2026-10-19), push, enable
+      Actions, add `NVD_API_KEY` secret
+- [x] Artifact/JAR renamed to `keycloak-kafka-event-listener` to match the repo (provider id stays `kafka-events`)
 - [ ] Release `0.1.0` via the `release` skill

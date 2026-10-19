@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Keycloak event listener SPI plugin that publishes Keycloak **user events** and **admin events** to
-**Apache Kafka**. Single-module Maven project; the build output is one shaded JAR you drop into Keycloak's
+**Apache Kafka**. Repo: https://github.com/arados/keycloak-kafka-event-listener. Single-module Maven project; the build output is one shaded JAR you drop into Keycloak's
 `providers/`.
 
 - **Keycloak version**: 26.8.1
@@ -42,13 +42,13 @@ docs/       — PLAN.md (work plan), RESEARCH.md (verified background)
 ## Build & Test Commands
 
 ```bash
-mvn clean package                                   # Build the plugin JAR (target/keycloak-kafka-events-*.jar)
+mvn clean package                                   # Build the plugin JAR (target/keycloak-kafka-event-listener-*.jar)
 mvn test                                            # Unit tests
 mvn test -Dtest=KafkaEventListenerProviderFactoryTest                       # One class
 mvn test -Dtest=KafkaEventListenerProviderFactoryTest#providerIdIsStable    # One method
 mvn verify -P e2e                                   # Unit tests + docker up + Playwright + docker down
 mvn compile spotbugs:check                          # SpotBugs + Find Security Bugs
-jar tf target/keycloak-kafka-events-*.jar | less        # Inspect what the shaded JAR contains
+jar tf target/keycloak-kafka-event-listener-*.jar | less        # Inspect what the shaded JAR contains
 ```
 
 ## Docker Development
@@ -148,7 +148,8 @@ Use the **`release`** skill. Summary: on a branch run
 - Never force-push; never push to `main` directly. Enforced by a hook.
 - Ask the user before `git push`, `gh pr create`, `gh pr merge`, tagging, or creating the GitHub repo
   (these are configured as "ask" in `.claude/settings.json`).
-- No GitHub remote exists yet (PLAN M4). Don't create one unprompted.
+- Remote: `origin` = https://github.com/arados/keycloak-kafka-event-listener (public). The local folder is still
+  named `keycloak-kafka-events`, so docker compose container names keep that prefix.
 
 ## Claude Code setup (`.claude/`, committed)
 

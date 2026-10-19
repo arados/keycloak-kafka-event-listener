@@ -1,9 +1,9 @@
 ---
 name: release
-description: Cut a release of keycloak-kafka-events — pick the version per the project's non-SemVer rules, open the "Release X.Y.Z" PR, wait for main CI, then tag. Use when the user asks to release, cut a version, bump the version, or tag.
+description: Cut a release of keycloak-kafka-event-listener — pick the version per the project's non-SemVer rules, open the "Release X.Y.Z" PR, wait for main CI, then tag. Use when the user asks to release, cut a version, bump the version, or tag.
 ---
 
-# Release keycloak-kafka-events
+# Release keycloak-kafka-event-listener
 
 Versions are `MAJOR.MINOR.PATCH` but **not SemVer**. Pick the bump from what landed since the last tag
 (`git log $(git describe --tags --abbrev=0)..origin/main --oneline`):
@@ -38,7 +38,7 @@ State the chosen version and the one-line reason to the user **before** doing an
    git tag -a vX.Y.Z -m "Release X.Y.Z"
    git push origin vX.Y.Z
    ```
-   The `release` CI job builds `target/keycloak-kafka-events-X.Y.Z.jar` and publishes the GitHub Release.
+   The `release` CI job builds `target/keycloak-kafka-event-listener-X.Y.Z.jar` and publishes the GitHub Release.
 8. Bump main back to the next snapshot only if the user wants snapshots (default: no).
 
 Never stack the release PR on another feature branch: CI only runs for PRs whose base is `main`.

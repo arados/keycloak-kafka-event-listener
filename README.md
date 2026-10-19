@@ -26,7 +26,7 @@ mvn verify -P e2e   # full build + end-to-end tests
 
 ## Installation (once released)
 
-1. Copy `keycloak-kafka-events-<version>.jar` into `/opt/keycloak/providers/` and run `kc.sh build`.
+1. Copy `keycloak-kafka-event-listener-<version>.jar` into `/opt/keycloak/providers/` and run `kc.sh build`.
 2. Configure the broker, e.g. `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS=kafka:9092`.
 3. In the admin console: *Realm settings → Events → Event listeners* → add `kafka-events`.
 

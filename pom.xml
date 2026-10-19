@@ -5,14 +5,14 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>hr.delmisoft.keycloak</groupId>
-    <artifactId>keycloak-kafka-events</artifactId>
+    <artifactId>keycloak-kafka-event-listener</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>Keycloak Kafka Event Listener</name>
     <description>Keycloak event listener SPI that publishes user and admin events to Apache Kafka.
         The shaded JAR is the deployable: drop it into Keycloak's providers/ directory.</description>
-    <url>https://github.com/arados/keycloak-kafka-events</url>
+    <url>https://github.com/arados/keycloak-kafka-event-listener</url>
     <inceptionYear>2026</inceptionYear>
 
     <licenses>
@@ -23,9 +23,9 @@
     </licenses>
 
     <scm>
-        <connection>scm:git:https://github.com/arados/keycloak-kafka-events.git</connection>
-        <developerConnection>scm:git:git@github.com:arados/keycloak-kafka-events.git</developerConnection>
-        <url>https://github.com/arados/keycloak-kafka-events</url>
+        <connection>scm:git:https://github.com/arados/keycloak-kafka-event-listener.git</connection>
+        <developerConnection>scm:git:git@github.com:arados/keycloak-kafka-event-listener.git</developerConnection>
+        <url>https://github.com/arados/keycloak-kafka-event-listener</url>
     </scm>
 
     <properties>
