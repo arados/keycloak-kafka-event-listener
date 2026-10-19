@@ -247,15 +247,17 @@ Record the decision + reason here when made.
       ip toggle) using `org.keycloak.util.JsonSerialization` + unit tests (golden JSON fixtures)
 - [x] `TopicRouter` (templates, sanitization, overrides) and `KeyStrategy` + unit tests
 - [x] `EventFilter` (include/exclude) + unit tests
-- [ ] `KafkaSender`: bounded queue + single sender thread + producer callbacks; injectable `Producer` so unit
-      tests use Kafka's `MockProducer`; never blocks `offer`
+- [x] `KafkaSender`: bounded queue + single sender thread + producer callbacks; injectable `Producer` so unit
+      tests use Kafka's `MockProducer`; never blocks `offer` (`sender.KafkaSender`; counters in `SenderStats`)
 - [ ] Provider: `EventListenerTransaction` + `enlistAfterCompletion`; rollback drops; error-event inner-session
       path covered by a test; compute `source` per D2 (realm issuer from the *event* realm, fallback URN; never
       throw) and cover user, error, brute-force and admin (incl. realm CREATE/DELETE) paths
 - [ ] Factory lifecycle: disabled-when-unconfigured, fail-fast on invalid config, `postInit` creates sender,
       `close()` drains with timeout; classloader-safe producer creation; `compression.type=zstd|snappy` without
       the codec JAR → fail at startup naming the JAR to add to `providers/` (Kafka itself only throws an opaque
-      `NoClassDefFoundError` from the producer constructor — RESEARCH §5.1)
+      `NoClassDefFoundError` from the producer constructor — RESEARCH §5.1). Done in `sender`, still to wire:
+      `KafkaProducers.create` (serializer instances, plugin TCCL, missing-codec message) and
+      `KafkaSender.close()` (drain ≤ `close-timeout-ms`, then `producer.close(remaining)`)
 - [ ] E2E: login → record on `keycloak.events` (key, headers, envelope fields); wrong password →
       `LOGIN_ERROR`; admin create user → `keycloak.admin-events`; verify `consumeTopic` output column order
       (headers/key/value) and fix `helpers.js` if needed
@@ -267,7 +269,9 @@ Record the decision + reason here when made.
 
 - [ ] TLS + SASL/SCRAM e2e (compose profile `secure` with a SASL_SSL listener and generated certs)
 - [ ] Micrometer metrics + e2e scrape check (`KC_METRICS_ENABLED=true`)
-- [ ] Rate-limited failure logging (one WARN per N seconds with counts)
+- [ ] Rate-limited failure logging (one WARN per N seconds with counts) — partly done: `KafkaSender` logs
+      delivery failures at most once per 60 s with the suppressed count (`FailureLogLimiter`); queue-full
+      drops are only counted, not logged yet
 - [ ] Topic overrides + filters e2e
 - [ ] E2E for the README "Compression" recipe: zstd-jni in `providers/` + `compression.type=zstd` publishes
 - [ ] Declare options in `getConfigMetadata()` for documentation (26.8.1 doesn't display it for event listeners,
