@@ -1,5 +1,6 @@
 package hr.delmisoft.keycloak.kafka.config;
 
+import hr.delmisoft.keycloak.kafka.KafkaEventsConst;
 import java.io.Serial;
 
 /**
@@ -14,5 +15,18 @@ public class KafkaEventsConfigException extends RuntimeException {
 
     public KafkaEventsConfigException(String message) {
         super(message);
+    }
+
+    /**
+     * The standard "invalid option value" error.
+     *
+     * @param key    option key without prefix, e.g. {@code topic-events}; the message names it the way an
+     *               operator types it ({@code spi-events-listener--kafka-events--topic-events})
+     * @param value  the rejected value; never pass the value of a sensitive producer property
+     * @param reason why it was rejected
+     */
+    public static KafkaEventsConfigException invalidValue(String key, String value, String reason) {
+        return new KafkaEventsConfigException("Invalid value for " + KafkaEventsConst.OPTION_PREFIX + key
+                + ": '" + value + "' (" + reason + ")");
     }
 }
