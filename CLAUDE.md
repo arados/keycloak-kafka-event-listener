@@ -14,7 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Keycloak event listener SPI plugin that publishes Keycloak **user events** and **admin events** to
-**Apache Kafka**. Multi-module Maven project producing a single deployable shaded JAR.
+**Apache Kafka**. Single-module Maven project; the build output is one shaded JAR you drop into Keycloak's
+`providers/`.
 
 - **Keycloak version**: 26.8.1
 - **Kafka client**: 4.4.0 (bundled); dev broker image `apache/kafka:4.3.1` (KRaft)
@@ -24,15 +25,16 @@ Keycloak event listener SPI plugin that publishes Keycloak **user events** and *
 - **Status**: M0 scaffold done; the listener is a no-op until M1 (see PLAN.md)
 
 Sibling project `../keycloak-otp` (same author) is the template this repo was created from: same build,
-CI, e2e wiring, versioning rules and test style. Look there for working examples of Keycloak SPI patterns,
+CI, e2e wiring, versioning rules and test style (otp is multi-module because it ships several features; this
+repo is deliberately one module). Look there for working examples of Keycloak SPI patterns,
 especially `otp-login`'s after-commit async delivery (`enlistAfterCompletion` → executor).
 
 ## Project Structure
 
 ```
-listener/   — EventListenerProvider(+Factory), config, envelope, routing, sender (keycloak-kafka-events-listener)
-dist/       — Single deployable JAR via maven-shade-plugin; bundles kafka-clients + codecs (keycloak-kafka-events)
-e2e/        — Playwright tests against the docker compose stack (Maven profile `e2e`)
+pom.xml     — the only Maven module; maven-shade-plugin bundles kafka-clients + codecs; `e2e` profile
+src/        — EventListenerProvider(+Factory), config, envelope, routing, sender; unit tests
+e2e/        — Playwright tests against the docker compose stack (plain npm project, run by the `e2e` profile)
 docs/       — PLAN.md (work plan), RESEARCH.md (verified background)
 .claude/    — shared Claude Code settings, hooks, skills (see "Claude Code setup")
 ```
@@ -40,13 +42,13 @@ docs/       — PLAN.md (work plan), RESEARCH.md (verified background)
 ## Build & Test Commands
 
 ```bash
-mvn clean package                                   # Build all JARs (dist/target/keycloak-kafka-events-*.jar)
+mvn clean package                                   # Build the plugin JAR (target/keycloak-kafka-events-*.jar)
 mvn test                                            # Unit tests
-mvn test -pl listener -Dtest=KafkaEventListenerProviderFactoryTest           # One class
-mvn test -pl listener -Dtest=KafkaEventListenerProviderFactoryTest#providerIdIsStable  # One method
+mvn test -Dtest=KafkaEventListenerProviderFactoryTest                       # One class
+mvn test -Dtest=KafkaEventListenerProviderFactoryTest#providerIdIsStable    # One method
 mvn verify -P e2e                                   # Unit tests + docker up + Playwright + docker down
 mvn compile spotbugs:check                          # SpotBugs + Find Security Bugs
-jar tf dist/target/keycloak-kafka-events-*.jar | less   # Inspect what the shaded JAR contains
+jar tf target/keycloak-kafka-events-*.jar | less        # Inspect what the shaded JAR contains
 ```
 
 ## Docker Development
@@ -97,7 +99,7 @@ These are the invariants every change must keep. Details and rationale in PLAN.m
 
 ## Testing
 
-**Unit tests** (`listener/src/test/`): JUnit 6 + Mockito + Hamcrest, mocking Keycloak's
+**Unit tests** (`src/test/`): JUnit 6 + Mockito + Hamcrest, mocking Keycloak's
 `KeycloakSession` / `RealmModel` / `KeycloakTransactionManager` (same style as keycloak-otp). For Kafka use
 `org.apache.kafka.clients.producer.MockProducer` — keep the producer injectable (package-private constructor or
 supplier) so no test needs a broker. Envelope tests compare against golden JSON fixtures in
@@ -107,7 +109,7 @@ supplier) so no test needs a broker. Envelope tests compare against golden JSON 
 browser-flow tests). `helpers.js` provides `adminToken`, `passwordLogin`, and `consumeTopic(topic)`, which runs
 the broker's console consumer inside the `kafka` container — no Node Kafka client dependency.
 `mvn verify -P e2e` manages the docker lifecycle exactly like keycloak-otp (antrun: down → up --build → wait →
-npm ci → playwright → down; exit code recorded in `e2e/target/e2e-exit-code.txt`).
+npm ci → playwright → down; exit code recorded in `target/e2e-exit-code.txt`).
 
 ## CI Pipeline
 
@@ -134,7 +136,7 @@ If a release contains several kinds of change, the highest part wins; lower part
 features bump MINOR (0.1.0 → 0.2.0); ask the user before cutting 1.0.0.
 
 Use the **`release`** skill. Summary: on a branch run
-`mvn -P e2e versions:set -DnewVersion=X.Y.Z -DgenerateBackupPoms=false -DprocessAllModules=true`, commit as
+`mvn versions:set -DnewVersion=X.Y.Z -DgenerateBackupPoms=false`, commit as
 `Release X.Y.Z`, PR to `main`; after merge wait for the `main` CI run (only one with dependency-check); then
 `git tag -a vX.Y.Z -m "Release X.Y.Z"` on the merge commit and push the tag.
 
@@ -157,6 +159,6 @@ Use the **`release`** skill. Summary: on a branch run
     PLAN.md task.
   - `guard-git.sh` (PreToolUse/Bash) — denies `git commit` on main, pushes to main, and force-pushes.
   - `check-version-sync.sh` (PostToolUse/Edit|Write on `pom.xml`/`Dockerfile`) — blocks with a reason if
-    `keycloak.version` ≠ Dockerfile base tag, or a module's parent version ≠ root version.
+    `keycloak.version` ≠ Dockerfile base tag.
 - Skills (`.claude/skills/`): `release`, `bump-keycloak`, `verify-events`.
 - Personal overrides go in `.claude/settings.local.json` (git-ignored).

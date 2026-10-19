@@ -160,7 +160,7 @@ Record the decision + reason here when made.
 - **D4 — JAR size / compression codecs.** zstd-jni + snappy-java are most of the 20 MB and extract native libs
   to a temp dir at runtime (fails on read-only/noexec `/tmp` unless configured). Options: (a) keep all,
   default `compression.type=none`; (b) bundle only lz4 (pure-Java fallback) and document that zstd/snappy need
-  the extra JARs in `providers/`; (c) two dist artifacts (slim / full). Proposal: (b).
+  the extra JARs in `providers/`; (c) two artifacts (slim / full, via a shade classifier). Proposal: (b).
 - **D5 — relocation.** Shade without relocation (current) vs. relocate `org.apache.kafka` to avoid clashing with
   another provider that bundles kafka-clients. Relocation is risky with Kafka's class-name-by-string config;
   keep unrelocated unless a clash is reported.
@@ -169,7 +169,8 @@ Record the decision + reason here when made.
 
 ### M0 — Scaffold ✅
 
-- [x] Multi-module Maven (listener, dist, e2e profile), shaded JAR with kafka-clients
+- [x] Single-module Maven (shaded JAR with kafka-clients, `e2e` profile); flattened from listener/dist/e2e
+      modules on 2026-10-19 — one module is all a single listener needs
 - [x] Docker stack: Keycloak 26.8.1 + Kafka 4.3.1 (KRaft) + optional kafka-ui; demo realm `kafka-demo`
 - [x] Smoke e2e (provider registered, realm wired, login unaffected) — passing
 - [x] CI copied from keycloak-otp (build, e2e, SpotBugs, dependency-check, release)

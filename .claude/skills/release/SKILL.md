@@ -23,11 +23,10 @@ State the chosen version and the one-line reason to the user **before** doing an
 
 1. Start from fresh main: `git switch main && git pull --ff-only`.
 2. Branch: `git checkout -b release-X.Y.Z`.
-3. Set the version in every module (the e2e module is only in the `e2e` profile, so the profile is required):
+3. Set the version (single-module project, so this only touches `pom.xml`):
    ```bash
-   mvn -P e2e versions:set -DnewVersion=X.Y.Z -DgenerateBackupPoms=false -DprocessAllModules=true
+   mvn versions:set -DnewVersion=X.Y.Z -DgenerateBackupPoms=false
    ```
-   The `check-version-sync` hook will flag any module left behind.
 4. Verify: `mvn -B clean verify` (unit tests + shaded JAR). If Docker is available also run `mvn -B verify -P e2e -DskipTests`.
 5. Commit exactly as `Release X.Y.Z`, push the branch, open a PR to `main` (ask the user before pushing / creating the PR).
 6. After the user merges it: wait for the **main** CI run to pass (`gh run list --branch main --limit 3`,
@@ -39,7 +38,7 @@ State the chosen version and the one-line reason to the user **before** doing an
    git tag -a vX.Y.Z -m "Release X.Y.Z"
    git push origin vX.Y.Z
    ```
-   The `release` CI job builds `dist/target/keycloak-kafka-events-X.Y.Z.jar` and publishes the GitHub Release.
+   The `release` CI job builds `target/keycloak-kafka-events-X.Y.Z.jar` and publishes the GitHub Release.
 8. Bump main back to the next snapshot only if the user wants snapshots (default: no).
 
 Never stack the release PR on another feature branch: CI only runs for PRs whose base is `main`.

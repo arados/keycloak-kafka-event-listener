@@ -90,7 +90,7 @@ Checked in `quay.io/keycloak/keycloak:26.8.1`, `/opt/keycloak/lib/lib/main`:
 
 Re-check on every Keycloak bump (`bump-keycloak` skill).
 
-Shaded JAR at scaffold time: `dist/target/keycloak-kafka-events-0.1.0-SNAPSHOT.jar` ≈ 20 MB.
+Shaded JAR at scaffold time: `target/keycloak-kafka-events-0.1.0-SNAPSHOT.jar` ≈ 20 MB.
 
 ## 6. Config plumbing
 
@@ -106,6 +106,6 @@ Shaded JAR at scaffold time: `dist/target/keycloak-kafka-events-0.1.0-SNAPSHOT.j
 
 - `../keycloak-otp` — sibling project by the same author. Patterns to reuse:
   `otp-login` async delivery (`enlistAfterCompletion` → executor → `KeycloakModelUtils.runJobInTransaction`),
-  Mockito-based Keycloak model tests, e2e module wiring, CI, versioning rules.
+  Mockito-based Keycloak model tests, e2e antrun wiring, CI, versioning rules.
 - `/Users/arados/Projects/keycloak` — Keycloak source checkout at **26.4.0** (older than our 26.8.1; the outbox
   classes are not in it — use `gh api repos/keycloak/keycloak/contents/<path>?ref=26.8.1` for current code).

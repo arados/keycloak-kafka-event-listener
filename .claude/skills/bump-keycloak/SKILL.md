@@ -15,14 +15,14 @@ A Keycloak bump is a **MINOR** release per CLAUDE.md versioning rules.
    - `pom.xml` → `<keycloak.version>`
    - `Dockerfile` → `FROM quay.io/keycloak/keycloak:X.Y.Z`
    Also update the version in `CLAUDE.md` ("Keycloak version").
-4. Re-check which libraries the new Keycloak image already ships, because `dist/pom.xml` bundles only
+4. Re-check which libraries the new Keycloak image already ships, because the shade plugin in `pom.xml` bundles only
    what Keycloak lacks:
    ```bash
    docker run --rm --entrypoint sh quay.io/keycloak/keycloak:X.Y.Z -c \
      'ls /opt/keycloak/lib/lib/main | grep -iE "kafka|slf4j|zstd|lz4|snappy|jackson-databind|micrometer-core"'
    ```
    If Keycloak now ships one of the bundled libs (or dropped slf4j/jackson/micrometer), adjust
-   `dist/pom.xml` `<artifactSet>` and record the finding in docs/RESEARCH.md "Keycloak runtime libraries".
+   the shade `<artifactSet>` in `pom.xml` and record the finding in docs/RESEARCH.md "Keycloak runtime libraries".
 5. If the plugin uses anything from `org.keycloak.events.outbox` / `model/jpa` internals (planned M3),
    diff those classes between the old and new tag:
    `gh api repos/keycloak/keycloak/compare/OLD...NEW --jq '.files[].filename' | grep -E 'events/outbox|EventBuilder|EventListener'`.

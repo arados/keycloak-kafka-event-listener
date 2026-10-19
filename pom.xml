@@ -5,12 +5,13 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>hr.delmisoft.keycloak</groupId>
-    <artifactId>keycloak-kafka-events-parent</artifactId>
+    <artifactId>keycloak-kafka-events</artifactId>
     <version>0.1.0-SNAPSHOT</version>
-    <packaging>pom</packaging>
+    <packaging>jar</packaging>
 
     <name>Keycloak Kafka Event Listener</name>
-    <description>Keycloak event listener SPI that publishes user and admin events to Apache Kafka</description>
+    <description>Keycloak event listener SPI that publishes user and admin events to Apache Kafka.
+        The shaded JAR is the deployable: drop it into Keycloak's providers/ directory.</description>
     <url>https://github.com/arados/keycloak-kafka-events</url>
     <inceptionYear>2026</inceptionYear>
 
@@ -32,61 +33,117 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <keycloak.version>26.8.1</keycloak.version>
         <kafka.version>4.4.0</kafka.version>
-        <junit.version>6.1.3</junit.version>
-        <mockito.version>5.24.0</mockito.version>
-        <hamcrest.version>3.0</hamcrest.version>
     </properties>
 
-    <modules>
-        <module>listener</module>
-        <module>dist</module>
-    </modules>
+    <dependencies>
+        <!-- Provided by the Keycloak server at runtime. -->
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-server-spi</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-server-spi-private</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-services</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-core</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.keycloak</groupId>
-                <artifactId>keycloak-server-spi</artifactId>
-                <version>${keycloak.version}</version>
-                <scope>provided</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.keycloak</groupId>
-                <artifactId>keycloak-server-spi-private</artifactId>
-                <version>${keycloak.version}</version>
-                <scope>provided</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.keycloak</groupId>
-                <artifactId>keycloak-services</artifactId>
-                <version>${keycloak.version}</version>
-                <scope>provided</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.keycloak</groupId>
-                <artifactId>keycloak-core</artifactId>
-                <version>${keycloak.version}</version>
-                <scope>provided</scope>
-            </dependency>
-            <!-- Not shipped by Keycloak: bundled into the shaded JAR by dist/. -->
-            <dependency>
-                <groupId>org.apache.kafka</groupId>
-                <artifactId>kafka-clients</artifactId>
-                <version>${kafka.version}</version>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+        <!-- Not shipped by Keycloak: bundled into the shaded JAR (see maven-shade-plugin below). -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>${kafka.version}</version>
+        </dependency>
 
-    <profiles>
-        <profile>
-            <id>e2e</id>
-            <modules>
-                <module>e2e</module>
-            </modules>
-        </profile>
-    </profiles>
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.1.3</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.24.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>5.24.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>hamcrest</artifactId>
+            <version>3.0</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 
     <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.6.2</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <!-- Keycloak 26.8.1 already ships slf4j-api (2.0.x), jackson and micrometer;
+                                 it does NOT ship kafka-clients or the compression codecs. Bundle only
+                                 what Keycloak lacks. Re-check with the bump-keycloak skill on every
+                                 Keycloak upgrade (see docs/RESEARCH.md "Keycloak runtime libraries"). -->
+                            <artifactSet>
+                                <includes>
+                                    <include>org.apache.kafka:kafka-clients</include>
+                                    <include>com.github.luben:zstd-jni</include>
+                                    <include>at.yawk.lz4:lz4-java</include>
+                                    <include>org.xerial.snappy:snappy-java</include>
+                                </includes>
+                            </artifactSet>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>META-INF/MANIFEST.MF</exclude>
+                                        <exclude>module-info.class</exclude>
+                                        <exclude>META-INF/versions/*/module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+
         <pluginManagement>
             <plugins>
                 <plugin>
@@ -101,7 +158,7 @@
                                 <version>1.14.0</version>
                             </plugin>
                         </plugins>
-                        <excludeFilterFile>${maven.multiModuleProjectDirectory}/spotbugs-exclude.xml</excludeFilterFile>
+                        <excludeFilterFile>${project.basedir}/spotbugs-exclude.xml</excludeFilterFile>
                         <effort>Max</effort>
                         <threshold>Medium</threshold>
                         <failOnError>true</failOnError>
@@ -126,4 +183,130 @@
             </plugins>
         </pluginManagement>
     </build>
+
+    <profiles>
+        <!-- Playwright end-to-end tests in e2e/. `mvn verify -P e2e` manages the docker compose
+             lifecycle: compose down, compose up (rebuilding the image), wait, npm ci, playwright, compose down. -->
+        <profile>
+            <id>e2e</id>
+            <properties>
+                <e2e.dir>${project.basedir}/e2e</e2e.dir>
+                <e2e.keycloak.url>http://localhost:8080</e2e.keycloak.url>
+                <e2e.realm>kafka-demo</e2e.realm>
+                <e2e.readiness.url>${e2e.keycloak.url}/realms/${e2e.realm}/.well-known/openid-configuration</e2e.readiness.url>
+                <e2e.readiness.maxAttempts>90</e2e.readiness.maxAttempts>
+                <e2e.readiness.sleepSeconds>2</e2e.readiness.sleepSeconds>
+                <e2e.exitCodeFile>${project.build.directory}/e2e-exit-code.txt</e2e.exitCodeFile>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <!-- Bring up Keycloak + Kafka and wait for Keycloak readiness (compose waits for Kafka health) -->
+                            <execution>
+                                <id>e2e-docker-up</id>
+                                <phase>pre-integration-test</phase>
+                                <goals><goal>run</goal></goals>
+                                <configuration>
+                                    <target>
+                                        <echo message="==&gt; Tearing down any existing stack" />
+                                        <exec executable="docker" dir="${project.basedir}" failonerror="false">
+                                            <arg value="compose" />
+                                            <arg value="down" />
+                                            <arg value="-v" />
+                                        </exec>
+
+                                        <echo message="==&gt; Building and starting docker compose stack" />
+                                        <exec executable="docker" dir="${project.basedir}" failonerror="true">
+                                            <arg value="compose" />
+                                            <arg value="up" />
+                                            <arg value="--build" />
+                                            <arg value="-d" />
+                                        </exec>
+
+                                        <echo message="==&gt; Waiting for Keycloak readiness at ${e2e.readiness.url}" />
+                                        <exec executable="sh" failonerror="true">
+                                            <arg value="-c" />
+                                            <arg value="for i in $(seq 1 ${e2e.readiness.maxAttempts}); do curl -sf ${e2e.readiness.url} &gt;/dev/null 2&gt;&amp;1 &amp;&amp; echo &quot;ready after $((i*${e2e.readiness.sleepSeconds}))s&quot; &amp;&amp; exit 0; sleep ${e2e.readiness.sleepSeconds}; done; echo &quot;Keycloak did not become ready in time&quot;; exit 1" />
+                                        </exec>
+                                    </target>
+                                </configuration>
+                            </execution>
+
+                            <!-- Install npm deps + Playwright browsers, then run the tests.
+                                 failonerror=false on the test step so post-integration-test still runs (docker down).
+                                 The verify execution below promotes the recorded exit code into a build failure. -->
+                            <execution>
+                                <id>e2e-run-tests</id>
+                                <phase>integration-test</phase>
+                                <goals><goal>run</goal></goals>
+                                <configuration>
+                                    <target>
+                                        <echo message="==&gt; npm ci" />
+                                        <exec executable="npm" dir="${e2e.dir}" failonerror="true">
+                                            <arg value="ci" />
+                                        </exec>
+
+                                        <echo message="==&gt; Installing Playwright Chromium" />
+                                        <exec executable="npx" dir="${e2e.dir}" failonerror="true">
+                                            <arg value="playwright" />
+                                            <arg value="install" />
+                                            <arg value="chromium" />
+                                        </exec>
+
+                                        <echo message="==&gt; Running Playwright tests" />
+                                        <mkdir dir="${project.build.directory}" />
+                                        <exec executable="npx" dir="${e2e.dir}" failonerror="false" resultproperty="e2e.exit">
+                                            <arg value="playwright" />
+                                            <arg value="test" />
+                                        </exec>
+                                        <echo file="${e2e.exitCodeFile}" message="${e2e.exit}" />
+                                    </target>
+                                </configuration>
+                            </execution>
+
+                            <!-- Always tear the stack down, even if tests failed. -->
+                            <execution>
+                                <id>e2e-docker-down</id>
+                                <phase>post-integration-test</phase>
+                                <goals><goal>run</goal></goals>
+                                <configuration>
+                                    <target>
+                                        <echo message="==&gt; Tearing down docker compose stack" />
+                                        <exec executable="docker" dir="${project.basedir}" failonerror="false">
+                                            <arg value="compose" />
+                                            <arg value="down" />
+                                            <arg value="-v" />
+                                        </exec>
+                                    </target>
+                                </configuration>
+                            </execution>
+
+                            <!-- Propagate the recorded Playwright exit code into a build failure. -->
+                            <execution>
+                                <id>e2e-verify</id>
+                                <phase>verify</phase>
+                                <goals><goal>run</goal></goals>
+                                <configuration>
+                                    <target>
+                                        <loadfile property="e2e.exit.recorded" srcFile="${e2e.exitCodeFile}" />
+                                        <fail message="Playwright E2E tests failed (exit code ${e2e.exit.recorded})">
+                                            <condition>
+                                                <not>
+                                                    <equals arg1="${e2e.exit.recorded}" arg2="0" trim="true" />
+                                                </not>
+                                            </condition>
+                                        </fail>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
