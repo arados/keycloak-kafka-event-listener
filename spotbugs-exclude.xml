@@ -2,4 +2,13 @@
 <FindBugsFilter>
     <!-- Add narrowly scoped exclusions here, each with a comment explaining why the finding
          is a false positive. Never exclude a pattern project-wide. -->
+
+    <!-- Keycloak creates one provider per KeycloakSession and the provider must hold that
+         session to use it (realm lookups in onEvent, enlisting the after-commit transaction).
+         Storing the caller's mutable session is the SPI contract, not a leak. -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+        <Class name="hr.delmisoft.keycloak.kafka.KafkaEventListenerProvider"/>
+        <Method name="&lt;init&gt;"/>
+    </Match>
 </FindBugsFilter>
