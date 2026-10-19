@@ -138,7 +138,7 @@ Option names must not end in `-enabled`, `-provider` or `-provider-default`: Key
 build-time and refuses an optimized start when they're set at runtime (RESEARCH §6.1).
 
 Producer defaults we set (overridable): `acks=all`, `enable.idempotence=true`, `linger.ms=20`,
-`compression.type=none` (see D4), `max.block.ms=1000` (sender thread only), `delivery.timeout.ms=30000`,
+`compression.type=lz4` (see D4), `max.block.ms=1000` (sender thread only), `delivery.timeout.ms=30000`,
 `client.id=keycloak-<hostname>`.
 
 Invalid values (bad template, unknown mode, unparsable number) → **fail fast** at startup with a message naming
@@ -168,7 +168,9 @@ Record the decision + reason here when made.
 - **D4 — JAR size / compression codecs.** zstd-jni + snappy-java are most of the 20 MB and extract native libs
   to a temp dir at runtime (fails on read-only/noexec `/tmp` unless configured). Options: (a) keep all,
   default `compression.type=none`; (b) bundle only lz4 (pure-Java fallback) and document that zstd/snappy need
-  the extra JARs in `providers/`; (c) two artifacts (slim / full, via a shade classifier). Proposal: (b).
+  the extra JARs in `providers/`; (c) two artifacts (slim / full, via a shade classifier).
+  **Decided 2026-10-19: option (b)**, plus lz4-java's JNI libraries dropped from the JAR (unused under Keycloak's
+  classloader; RESEARCH §5.1). JAR 19.5 MB → 11.1 MB, no native code. Default `compression.type=lz4`.
 - **D5 — relocation.** Shade without relocation (current) vs. relocate `org.apache.kafka` to avoid clashing with
   another provider that bundles kafka-clients. Relocation is risky with Kafka's class-name-by-string config;
   keep unrelocated unless a clash is reported.
@@ -198,13 +200,15 @@ Record the decision + reason here when made.
 - [ ] Provider: `EventListenerTransaction` + `enlistAfterCompletion`; rollback drops; error-event inner-session
       path covered by a test
 - [ ] Factory lifecycle: disabled-when-unconfigured, fail-fast on invalid config, `postInit` creates sender,
-      `close()` drains with timeout; classloader-safe producer creation
+      `close()` drains with timeout; classloader-safe producer creation; `compression.type=zstd|snappy` without
+      the codec JAR → fail at startup naming the JAR to add to `providers/` (Kafka itself only throws an opaque
+      `NoClassDefFoundError` from the producer constructor — RESEARCH §5.1)
 - [ ] E2E: login → record on `keycloak.events` (key, headers, envelope fields); wrong password →
       `LOGIN_ERROR`; admin create user → `keycloak.admin-events`; verify `consumeTopic` output column order
       (headers/key/value) and fix `helpers.js` if needed
 - [ ] E2E: `docker compose stop kafka` → login still 200 and fast (< 500 ms) → `start kafka`
 - [ ] README: install, config table, envelope example, guarantees, compatibility matrix
-- [ ] Resolve D1, D2, D4 (at least provisionally) before tagging `0.1.0`
+- [ ] Resolve D1, D2 (at least provisionally) before tagging `0.1.0` (D4 decided)
 
 ### M2 — Hardening
 
@@ -212,10 +216,11 @@ Record the decision + reason here when made.
 - [ ] Micrometer metrics + e2e scrape check (`KC_METRICS_ENABLED=true`)
 - [ ] Rate-limited failure logging (one WARN per N seconds with counts)
 - [ ] Topic overrides + filters e2e
+- [ ] E2E for the README "Compression" recipe: zstd-jni in `providers/` + `compression.type=zstd` publishes
 - [ ] Declare options in `getConfigMetadata()` for documentation (26.8.1 doesn't display it for event listeners,
       and `show-config` already lists every `kc.spi-*` key masked — RESEARCH §6.2)
 - [ ] Load sanity: 1k logins/s locally with Kafka down → no latency regression, bounded memory
-- [ ] SpotBugs clean, dependency-check clean (we ship kafka-clients + codecs)
+- [ ] SpotBugs clean, dependency-check clean (we ship kafka-clients + lz4-java)
 
 ### M3 — Optional at-least-once (`delivery-mode=outbox`)
 

@@ -82,15 +82,63 @@ Checked in `quay.io/keycloak/keycloak:26.8.1`, `/opt/keycloak/lib/lib/main`:
 
 | Library | Shipped by Keycloak? | Our action |
 |---|---|---|
-| `kafka-clients` | **no** | bundle (shade) |
-| `zstd-jni`, `lz4-java`, `snappy-java` | **no** | bundled today (they are kafka-clients runtime deps); ~most of the 20 MB JAR — see PLAN open decision D4 |
+| `kafka-clients` 4.4.0 | **no** | bundle (shade). Itself embeds relocated `commons-net` 3.13.0 (`org/apache/kafka/shaded/…`) |
+| `lz4-java` (`at.yawk.lz4:lz4-java` 1.11.2, the fork kafka-clients 4.4.0 depends on) | **no** | bundle the classes, **drop its JNI libraries** (§5.1) |
+| `zstd-jni` 1.5.7-17, `snappy-java` 1.1.10.7 | **no** | **not bundled** (D4); excluded from the kafka-clients dependency. Users who want those codecs add the JARs to `providers/` (README "Compression") |
 | `slf4j-api` | yes, 2.0.18 (+ `slf4j-jboss-logmanager`) | do **not** bundle (kafka-clients wants 1.7.36; 2.x API is compatible for its usage) |
 | `jackson-databind` | yes, 2.21.7 | use Keycloak's (`org.keycloak.util.JsonSerialization`), don't bundle |
 | `micrometer-core` | yes, 1.17.1 | use for metrics (M2), don't bundle |
 
 Re-check on every Keycloak bump (`bump-keycloak` skill).
 
-Shaded JAR at scaffold time: `target/keycloak-kafka-event-listener-0.1.0-SNAPSHOT.jar` ≈ 20 MB.
+Shaded JAR size: 19.5 MB at scaffold time (kafka-clients + zstd-jni 7.2 MB + snappy-java 1.9 MB + lz4-java
+0.9 MB); **11.1 MB** after D4 (2026-10-19), almost all of it kafka-clients' own classes. No `.so`/`.dylib`/`.dll`
+left (`jar tf target/*.jar | grep -E '\.(so|dylib|dll)$'` is empty).
+
+### 5.1 Compression codecs (verified 2026-10-19, kafka-clients 4.4.0, lz4-java 1.11.2)
+
+Sources: `kafka-clients-4.4.0-sources.jar` and `lz4-java-1.11.2-sources.jar` from Maven Central; empirical
+checks in `CompressionCodecsTest`, a throwaway probe (JDK 25, macOS aarch64) and the docker stack (Keycloak
+image runs OpenJDK 21.0.12).
+
+- **zstd/snappy classes load only when that codec is configured.** `Compression.of(CompressionType)` and
+  `KafkaProducer.configureCompression` only instantiate `ZstdCompression`/`SnappyCompression` for
+  `compression.type=zstd|snappy`; `CompressionType` itself never touches the codec libraries (it hard-codes
+  zstd's level range precisely to avoid calling `Zstd.minCompressionLevel()`). A real `KafkaProducer` with
+  `compression.type=lz4` constructs fine with zstd-jni and snappy-java absent.
+- **Missing codec JAR fails at producer construction, not at first send.** `new KafkaProducer(...)` with
+  `compression.type=zstd` (or `snappy`) and no codec JAR throws `KafkaException("Failed to construct kafka
+  producer")` caused by `NoClassDefFoundError: com/github/luben/zstd/ZstdOutputStreamNoFinalizer` (snappy:
+  `org/xerial/snappy/SnappyOutputStream`) from `ZstdCompression$Builder.build()` — bytecode verification of
+  `ZstdCompression` loads the stream class it passes as an `OutputStream`. So it surfaces in our factory's
+  `postInit`, but the message doesn't say which JAR to add; the config layer should check up front (PLAN, factory
+  task). (Were verification disabled, it would instead fail at the first batch, on the sender thread.)
+- **Kafka's lz4 path**: `Lz4BlockOutputStream`/`Lz4BlockInputStream` call `LZ4Factory.fastestInstance()` and
+  `XXHashFactory.fastestInstance()`.
+- **`fastestInstance()` tries JNI only if lz4-java was loaded by the system classloader** (or JNI is already
+  loaded): `if (Native.isLoaded() || Native.class.getClassLoader() == ClassLoader.getSystemClassLoader())`,
+  otherwise it goes straight to `fastestJavaInstance()`. Keycloak loads providers through Quarkus' runner
+  classloader, not the system one (`jcmd 1 VM.classloaders show-classes` in the 26.8.1 container lists our
+  factory under `io.quarkus.bootstrap.runner.RunnerClassLoader`, a child of `app`; the system classpath is only
+  `lib/quarkus-run.jar`), so **the bundled natives were never used under Keycloak**. Probe: lz4-java in
+  a non-system `URLClassLoader` → `LZ4Factory:JavaSafe | XXHashFactory:JavaUnsafe`, nothing written to
+  `java.io.tmpdir`.
+- **When JNI is attempted** (`Native.load()`): `System.loadLibrary("lz4-java")` from `java.library.path`, then
+  extract `net/jpountz/util/<os>/<arch>/liblz4-java.<ext>` to `java.io.tmpdir` via `File.createTempFile` and
+  `System.load` it. Missing resource → `UnsupportedOperationException`; unwritable tmpdir → `IOException` →
+  `ExceptionInInitializerError`; noexec tmpdir → `UnsatisfiedLinkError`. `fastestInstance()` catches
+  `Throwable` and falls back to Java in every case. Probe on the system classloader: JAR without natives →
+  `JavaSafe`, first call 35 ms (vs 233 ms extracting JNI); read-only tmpdir with natives → `JavaSafe`. Cost of
+  the fallback: each later `fastestInstance()` call retries JNI (~20 µs vs ~5 µs) — Kafka calls it once per
+  compressed batch, and under Keycloak this branch isn't taken anyway.
+- **Java path performance**: in 1.11.2 `LZ4Factory.unsafeInstance()` deliberately returns `safeInstance()`
+  (security), and the `nativeInsecureInstance()` javadoc says the safe decompressor is faster than even the JNI
+  fast decompressor. Compression on the Java path
+  is slower than JNI, but our payloads are small JSON batches.
+- **Decision**: exclude `net/jpountz/util/*/*/liblz4-java.*` from the shaded JAR (pom shade filter). Nothing is
+  ever extracted, no native code ships, and behaviour under Keycloak is unchanged. Watch item: lz4-java's
+  `UnsafeUtils` (used by `XXHashFactory:JavaUnsafe`) calls `sun.misc.Unsafe` memory-access methods that JDK 24+
+  warns about and a future JDK removes; re-check on JDK/Kafka bumps.
 
 ## 6. Config plumbing
 
