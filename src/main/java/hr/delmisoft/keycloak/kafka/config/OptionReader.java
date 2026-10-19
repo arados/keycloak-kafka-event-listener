@@ -26,8 +26,7 @@ final class OptionReader {
     }
 
     static KafkaEventsConfigException invalid(String key, String value, String reason) {
-        return new KafkaEventsConfigException(
-                "Invalid value for " + optionName(key) + ": '" + value + "' (" + reason + ")");
+        return KafkaEventsConfigException.invalidValue(key, value, reason);
     }
 
     /** Trimmed value, or {@code null} when unset. A set-but-blank value is returned as {@code ""}. */
