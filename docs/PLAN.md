@@ -132,7 +132,10 @@ hard ceiling; schema changes that remove/rename fields bump `kcschemaversion` (a
 | `queue-capacity` | `10000` | async mode in-memory queue; full → drop + `dropped` metric |
 | `close-timeout-ms` | `5000` | shutdown drain budget |
 | `producer-properties-file` | — | `.properties` with any Kafka producer config (TLS/SASL secrets live here) |
-| `producer-<kafka.key.with.dashes>` | — | passthrough, e.g. `producer-security-protocol=SASL_SSL`; only if `Config.Scope.getPropertyNames()` works (verify) |
+| `producer-<kafka-key-with-dashes>` | — | passthrough, e.g. `producer-security-protocol=SASL_SSL` → `security.protocol`; `--` option form only; not for `ssl.provider` (see D3) |
+
+Option names must not end in `-enabled`, `-provider` or `-provider-default`: Keycloak treats such SPI keys as
+build-time and refuses an optimized start when they're set at runtime (RESEARCH §6.1).
 
 Producer defaults we set (overridable): `acks=all`, `enable.idempotence=true`, `linger.ms=20`,
 `compression.type=none` (see D4), `max.block.ms=1000` (sender thread only), `delivery.timeout.ms=30000`,
@@ -156,7 +159,12 @@ Record the decision + reason here when made.
 - **D2 — `source` attribute.** `keycloak:<realmId>` (stable, opaque) vs. realm issuer URL (readable, changes
   with hostname). Proposal: `keycloak:<realmId>`, issuer URL as extension later if asked.
 - **D3 — config passthrough.** `producer-*` passthrough via `getPropertyNames()` vs. only
-  `producer-properties-file`. Decide after the M1 verification task.
+  `producer-properties-file`. Verified 2026-10-19 (RESEARCH §6.1): enumeration works for env (`__` form), CLI
+  and keycloak.conf; keys come back fully prefixed; dash→dot mapping is lossless for all producer keys.
+  Proposal: support **both**. Precedence: our defaults < properties file < `producer-*` options. Caveats to
+  document: `--` form only (legacy single-separator keys aren't enumerated); `ssl.provider` only via the file
+  (a runtime `producer-ssl-provider` makes `start --optimized` exit). Secrets (SASL/keystore passwords) are
+  better in the file, since Keycloak masks `kc.spi-*` values in `show-config` but env/CLI leak elsewhere.
 - **D4 — JAR size / compression codecs.** zstd-jni + snappy-java are most of the 20 MB and extract native libs
   to a temp dir at runtime (fails on read-only/noexec `/tmp` unless configured). Options: (a) keep all,
   default `compression.type=none`; (b) bundle only lz4 (pure-Java fallback) and document that zstd/snappy need
@@ -178,7 +186,7 @@ Record the decision + reason here when made.
 
 ### M1 — Async publishing (MVP, target `0.1.0`)
 
-- [ ] Verify `Config.Scope.getPropertyNames()` behaviour under Quarkus (env + CLI keys) and how
+- [x] Verify `Config.Scope.getPropertyNames()` behaviour under Quarkus (env + CLI keys) and how
       `getConfigMetadata()` must declare options in 26.8.1; record result under D3 and RESEARCH §6
 - [ ] `KafkaEventsConfig` (immutable record) parsed from `Config.Scope` with validation + unit tests
 - [ ] `Envelope` model + `EnvelopeMapper` for `Event` and `AdminEvent` (redaction, representation ceiling,
@@ -204,7 +212,8 @@ Record the decision + reason here when made.
 - [ ] Micrometer metrics + e2e scrape check (`KC_METRICS_ENABLED=true`)
 - [ ] Rate-limited failure logging (one WARN per N seconds with counts)
 - [ ] Topic overrides + filters e2e
-- [ ] `kc.sh show-config` / server info shows our options (getConfigMetadata)
+- [ ] Declare options in `getConfigMetadata()` for documentation (26.8.1 doesn't display it for event listeners,
+      and `show-config` already lists every `kc.spi-*` key masked — RESEARCH §6.2)
 - [ ] Load sanity: 1k logins/s locally with Kafka down → no latency regression, bounded memory
 - [ ] SpotBugs clean, dependency-check clean (we ship kafka-clients + codecs)
 

@@ -95,12 +95,51 @@ Shaded JAR at scaffold time: `target/keycloak-kafka-events-0.1.0-SNAPSHOT.jar` �
 ## 6. Config plumbing
 
 - `org.keycloak.Config.Scope` (in `keycloak-core`) has `get`, `getInt`, `getLong`, `getBoolean`, `getArray`,
-  `scope(...)`, **`getPropertyNames()`**, `root()`. `getPropertyNames()` could enable a generic
-  `producer-*` passthrough — verify in M1 that the Quarkus implementation returns env/CLI-provided keys.
+  `scope(...)`, **`getPropertyNames()`**, `root()`.
 - SPI option naming in KC 26: CLI `--spi-events-listener--kafka-events--bootstrap-servers`,
-  env `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS` (used in docker-compose.yml).
-- Declare options via `EventListenerProviderFactory#getConfigMetadata()` (`ProviderConfigurationBuilder`)
-  so they show up in `kc.sh show-config` / server info. Verify current API in M1.
+  env `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS` (used in docker-compose.yml),
+  keycloak.conf `spi-events-listener--kafka-events--bootstrap-servers=…`.
+
+### 6.1 `getPropertyNames()` under Quarkus (verified 2026-10-19, Keycloak 26.8.1)
+
+Source: `quarkus/runtime/.../configuration/MicroProfileConfigProvider.java` (`MicroProfileScope`),
+`KcEnvConfigSource.java`, `ConfigArgsConfigSource.java`, `mappers/PropertyMappers.java`, `cli/Picocli.java`
+at tag 26.8.1. Confirmed empirically by logging `getPropertyNames()` + `get()` from our factory's `init` in
+the compose stack (`start-dev`) and in the built image with `start --optimized`.
+
+- Returns **full SmallRye keys**, not suffixes: `kc.spi-events-listener--kafka-events--producer-linger-ms`.
+  Strip the prefix `kc.spi-events-listener--kafka-events--` ourselves.
+- Implementation: filters `SmallRyeConfig.getPropertyNames()` by the **new `--` separator prefix only**.
+- Sources that show up (all verified): env `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__PRODUCER_LINGER_MS`
+  (`KcEnvConfigSource` rewrites `KC_*` to `kc.` + lowercase + `_`→`-`, so `__`→`--`), CLI
+  `--spi-events-listener--kafka-events--producer-compression-type=lz4`, keycloak.conf
+  `spi-events-listener--kafka-events--producer-batch-size=1234`.
+- **Legacy single-separator form is invisible to enumeration**: env `KC_SPI_EVENTS_LISTENER_KAFKA_EVENTS_PRODUCER_ACKS`
+  is readable via `get("producer-acks")` (falls back to the old name) but is **not** in `getPropertyNames()`.
+  → passthrough only supports the `--` form; document it.
+- `KCKEY_<X>=spi-events-listener--kafka-events--producer-client.id` + `KC_<X>=…` produces a dotted key that
+  *is* listed, but `get("producer-client.id")` returns null (key is dash-cased before lookup). Don't support
+  dotted keys; use the dash form.
+- Kafka 4.4.0 `ProducerConfig.configNames()`: all 120 keys match `[a-z0-9.]+`, so `producer-a-b-c` →
+  `a.b.c` (dash→dot) is lossless.
+- **Build-time suffix trap.** `PropertyMappers.isSpiBuildTimeProperty` treats any `kc.spi-*` key ending in
+  `-provider`, `-enabled` or `-provider-default` as a **build-time** option. Setting such a key at runtime on an
+  optimized image makes `kc.sh start --optimized` **exit 2**: *"The following build time options have values
+  that differ from what is persisted … kc.spi-events-listener--kafka-events--producer-ssl-provider"*.
+  Consequences: (1) Kafka `ssl.provider` (the only producer key with such a suffix) cannot go through the
+  passthrough — it must use `producer-properties-file`; (2) **none of our own option names may end in
+  `-enabled`, `-provider` or `-provider-default`** (e.g. use `metrics=true`, not `metrics-enabled`).
+- `show-config` prints every `kc.spi-*` key with the value masked, declared or not.
+
+### 6.2 `getConfigMetadata()` (verified 2026-10-19, Keycloak 26.8.1)
+
+- `ProviderFactory#getConfigMetadata()` is a default method returning an empty list. Nothing validates SPI
+  options against it: unknown `kc.spi-*` keys pass straight through (no mapper → `context.proceed`).
+- Generic callers in 26.8.1: only `AuthenticationManagementResource` (authenticator config) and
+  `ServerInfoAdminResource`, which renders config only for `ConfiguredProvider` implementations — an
+  `EventListenerProviderFactory` isn't one, so our metadata isn't shown anywhere.
+- Still worth implementing (`ProviderConfigurationBuilder`): it documents the options in code, costs nothing,
+  and future Keycloak versions may surface it. It is not required for options to work.
 
 ## 7. Reference code on this machine
 
