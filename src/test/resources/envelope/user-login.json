@@ -1,0 +1,28 @@
+{
+  "specversion": "1.0",
+  "id": "0b6c1e2a-5d4f-4c3b-9a8e-7f6d5c4b3a21",
+  "source": "keycloak:6b1e8f4a-3c2d-4e5f-8a9b-0c1d2e3f4a5b",
+  "type": "org.keycloak.event.LOGIN",
+  "time": "2026-10-19T12:34:56.789Z",
+  "subject": "f3e2d1c0-b9a8-4776-8554-433221100fed",
+  "datacontenttype": "application/json",
+  "kcschemaversion": 1,
+  "kcrealmid": "6b1e8f4a-3c2d-4e5f-8a9b-0c1d2e3f4a5b",
+  "kcrealmname": "kafka-demo",
+  "kckind": "user",
+  "data": {
+    "type": "LOGIN",
+    "clientId": "kafka-demo-client",
+    "userId": "f3e2d1c0-b9a8-4776-8554-433221100fed",
+    "sessionId": "9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
+    "ipAddress": "172.18.0.1",
+    "details": {
+      "auth_method": "openid-connect",
+      "auth_type": "code",
+      "code_id": "9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
+      "consent": "no_consent_required",
+      "redirect_uri": "http://localhost:3000/callback",
+      "username": "testuser"
+    }
+  }
+}

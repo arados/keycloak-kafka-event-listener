@@ -57,6 +57,25 @@ Source: `server-spi-private/src/main/java/org/keycloak/events/EventBuilder.java`
   `EventListenerTransaction(BiConsumer<AdminEvent, Boolean>, Consumer<Event>)`.
 - Admin events: `onEvent(AdminEvent, boolean includeRepresentation)`.
 
+### 3.1 Event model getters (verified 2026-10-19 with `javap`, Keycloak 26.8.1)
+
+`Event`, `AdminEvent`, `AuthDetails`, `EventType`, `OperationType`, `ResourceType` live in
+**`keycloak-server-spi-private`** (not `keycloak-server-spi`). `JsonSerialization` is in `keycloak-core`.
+
+- `Event`: `getId`, `getTime` (epoch ms), `getType` (`EventType`), `getRealmId`, **`getRealmName`**, `getClientId`,
+  `getUserId`, `getSessionId`, `getIpAddress`, `getError`, `getDetails` (`Map<String,String>`, may be null).
+  `EventBuilder` calls `setRealmName`, so the realm name is on the event without a session lookup.
+- `AdminEvent`: `getId` (the event id; `getResourceId()` is derived from the last `resourcePath` segment),
+  `getTime`, `getRealmId`, `getRealmName`, `getAuthDetails`, `getOperationType`, `getResourcePath`,
+  `getRepresentation` (JSON **string**), `getError`, **`getDetails`** (`Map<String,String>`), `getResourceType`
+  (enum) and `getResourceTypeAsString` — the field is stored as a string (custom resource types), so use the
+  string getter.
+- `AuthDetails`: `getRealmId`, `getRealmName`, `getClientId`, `getUserId`, `getIpAddress`.
+- `AdminEventBuilder.representation(Object)` runs `StripSecretsUtils.stripSecrets(session, rep)` before
+  `JsonSerialization.writeValueAsString`, so Keycloak already masks secrets in admin representations.
+- `JsonSerialization.mapper` (Jackson 2.21.7): `Jdk8Module` + `JavaTimeModule`, `FAIL_ON_EMPTY_BEANS=false`,
+  default property inclusion `NON_NULL`. Records serialize fine.
+
 ## 4. Keycloak's generic durable outbox (for the optional at-least-once mode)
 
 Added with SSF in 26.7.0 ([PR #48256](https://github.com/keycloak/keycloak/pull/48256), maintainer

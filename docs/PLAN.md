@@ -88,20 +88,31 @@ Kafka value = UTF-8 JSON; header `content-type: application/cloudevents+json; ch
     // user event
     "type": "LOGIN", "clientId": "...", "userId": "...", "sessionId": "...",
     "ipAddress": "...",                        // omitted when include-ip-address=false
-    "error": null,
-    "details": { "auth_method": "openid-connect", "username": "..." }   // after redaction/allowlist
+    "error": "...",                            // error events only
+    "details": { "auth_method": "openid-connect", "token_id": "[redacted]", "username": "..." }
     // admin event (instead)
     // "operationType": "CREATE", "resourceType": "USER", "resourcePath": "users/<id>",
-    // "authDetails": { "realmId": "...", "clientId": "...", "userId": "...", "ipAddress": "..." },
-    // "error": null, "details": {...},
+    // "authDetails": { "realmId": "...", "realmName": "master", "clientId": "...", "userId": "...", "ipAddress": "..." },
+    // "error": "...", "details": {...},
     // "representation": { ... }               // ONLY if includeRepresentation && include-representation=true
   }
 }
 ```
 
 Rules: never emit credentials, secrets, tokens, request bodies; redact `details` keys matching
-`(?i)(password|secret|token|credential|otp|code_verifier)`; treat Keycloak's `includeRepresentation=false` as a
-hard ceiling; schema changes that remove/rename fields bump `kcschemaversion` (a MAJOR release).
+`(?i)(password|secret|token|credential|otp|code_verifier)` (substring, case-insensitive) by replacing the value
+with `"[redacted]"` (key kept); treat Keycloak's `includeRepresentation=false` as a hard ceiling; schema changes
+that remove/rename fields bump `kcschemaversion` (a MAJOR release).
+
+Serialization rules (implemented in `envelope.EnvelopeMapper`, guarded by `src/test/resources/envelope/*.json`):
+- **Null/absent fields are omitted**, never written as `null` (e.g. no `subject` for a `LOGIN_ERROR` without a
+  user, no `error` on success). Empty `details` are omitted too. Consumers must treat absent = null.
+- Field order is fixed as shown; `details` keys are sorted.
+- `time` is always UTC with milliseconds (`...:00.000Z`).
+- `representation` is embedded as parsed JSON (object or array); if it doesn't parse, it is omitted. Keycloak
+  already strips secrets from it (`StripSecretsUtils`, RESEARCH §3.1).
+- The mapper is pure (no `KeycloakSession`): the provider passes `source` and `realmName` in an
+  `EnvelopeContext`; `kcrealmname` falls back to `Event/AdminEvent.getRealmName()`.
 
 ### Routing, keys, headers
 
@@ -154,8 +165,11 @@ Micrometer (Keycloak ships `micrometer-core`; exposed on Keycloak's metrics endp
 
 Record the decision + reason here when made.
 
-- **D1 — envelope shape.** CloudEvents structured mode (current proposal) vs. binary mode (`ce_*` headers,
-  raw `data` as value) vs. custom. Proposal: structured; revisit only with a concrete consumer need.
+- **D1 — envelope shape. Decided 2026-10-19: CloudEvents 1.0 structured JSON mode** (envelope v1 above),
+  over binary mode (`ce_*` headers, raw `data` as value) or a custom shape. Reason: the whole event is
+  self-describing in the value (survives tools that drop headers, e.g. sinks/replays), it stays close to what
+  upstream Keycloak may adopt, and our `kc-*` headers still allow filtering without parsing. Revisit only
+  with a concrete consumer need.
 - **D2 — `source` attribute.** `keycloak:<realmId>` (stable, opaque) vs. realm issuer URL (readable, changes
   with hostname). Proposal: `keycloak:<realmId>`, issuer URL as extension later if asked.
 - **D3 — config passthrough.** `producer-*` passthrough via `getPropertyNames()` vs. only
@@ -189,7 +203,7 @@ Record the decision + reason here when made.
 - [x] Verify `Config.Scope.getPropertyNames()` behaviour under Quarkus (env + CLI keys) and how
       `getConfigMetadata()` must declare options in 26.8.1; record result under D3 and RESEARCH §6
 - [ ] `KafkaEventsConfig` (immutable record) parsed from `Config.Scope` with validation + unit tests
-- [ ] `Envelope` model + `EnvelopeMapper` for `Event` and `AdminEvent` (redaction, representation ceiling,
+- [x] `Envelope` model + `EnvelopeMapper` for `Event` and `AdminEvent` (redaction, representation ceiling,
       ip toggle) using `org.keycloak.util.JsonSerialization` + unit tests (golden JSON fixtures)
 - [ ] `TopicRouter` (templates, sanitization, overrides) and `KeyStrategy` + unit tests
 - [ ] `EventFilter` (include/exclude) + unit tests
