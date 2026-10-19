@@ -76,6 +76,34 @@ Source: `server-spi-private/src/main/java/org/keycloak/events/EventBuilder.java`
 - `JsonSerialization.mapper` (Jackson 2.21.7): `Jdk8Module` + `JavaTimeModule`, `FAIL_ON_EMPTY_BEANS=false`,
   default property inclusion `NON_NULL`. Records serialize fine.
 
+### 3.2 Resolving the realm issuer for `source` (D2, verified 2026-10-19 from 26.8.1 source)
+
+- CloudEvents 1.0: `source` is a required URI-reference (absolute URI recommended); only `source`+`id` must
+  be unique. <https://github.com/cloudevents/spec/blob/main/cloudevents/spec.md>
+- Issuer = `Urls.realmIssuer(baseUri, realmName)` (`services/.../services/Urls.java:166`, percent-encodes the
+  name) — what `TokenManager` and `OIDCWellKnownProvider` use. Base: realm attribute `frontendUrl` if set,
+  else `session.getContext().getUri(UrlType.FRONTEND).getBaseUri()` (`HostnameV2Provider`, cached per context).
+- Realm `frontendUrl` is read from the **context** realm by `HostnameV2Provider.getRealmFrontUriBuilder`, so
+  read the attribute from the **event** realm ourselves when the two differ.
+- Varies per request when `hostname-strict=false` (dev mode / Host header) or `hostname` is host-only
+  (scheme/port from the request). Stable when `hostname` is a full URL or the realm sets `frontendUrl`.
+- Dispatch paths:
+  - Error events: inner session from `runJobInTransactionWithResult` gets realm/client cloned
+    (`KeycloakModelUtils.java:418-545`) and `QuarkusKeycloakContext` resolves the HTTP request from
+    `CurrentRequestManager` on the same thread → `getUri()` works (code reading; confirm in e2e).
+  - Brute-force lockout events (`USER_DISABLED_BY_*_LOCKOUT`) run on the `bruteforce` executor thread with a
+    synthetic `BruteForceHttpRequest` (`DefaultBruteForceProtector.java:251-266`) → `getUri()` works. Hence the
+    design rule is "inside `onEvent`", not "on the request thread".
+  - Admin events: context realm = target realm (`RealmsAdminResource.java:230`) = `AdminEvent.realmId`,
+    **except** realm CREATE/DELETE which carry the admin's realm (`RealmsAdminResource.java:182-183,583-585`).
+    `authDetails.realmId` is the admin's realm — not for `source`.
+  - No HTTP context (scheduled jobs): `getUri()` throws `ContextNotActiveException` unless `frontendUrl` or a
+    full-URL `hostname` is set → catch and use `urn:keycloak:realm:<realmId>`.
+- Precedent: Keycloak SSF transmitter uses the realm issuer for SET `iss`
+  (`ssf/transmitter/.../support/SsfUtil.java:27-57`, chain: realm `frontendUrl` → `KC_HOSTNAME_URL` → full-URL
+  `hostname` → `ctx.getUri()`). Keycloak discussion #25133 proposes the realm admin URL (no maintainer reply).
+  No existing Keycloak→Kafka listener sets a CloudEvents `source`.
+
 ## 4. Keycloak's generic durable outbox (for the optional at-least-once mode)
 
 Added with SSF in 26.7.0 ([PR #48256](https://github.com/keycloak/keycloak/pull/48256), maintainer

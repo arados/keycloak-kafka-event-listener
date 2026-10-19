@@ -75,7 +75,7 @@ Kafka value = UTF-8 JSON; header `content-type: application/cloudevents+json; ch
 {
   "specversion": "1.0",
   "id": "<Keycloak event id (UUID)>",          // stable; duplicates (outbox mode) keep it
-  "source": "keycloak:<realmId>",              // TODO(D2): realm id vs. issuer URL
+  "source": "https://sso.example.com/realms/demo", // realm issuer (= token iss); fallback urn:keycloak:realm:<realmId>
   "type": "org.keycloak.event.LOGIN",          // admin: "org.keycloak.admin.<RESOURCE_TYPE>.<OPERATION>"
   "time": "2026-10-19T12:34:56.789Z",          // RFC 3339 from event.getTime()
   "subject": "<userId>",                       // admin: resourcePath
@@ -170,8 +170,15 @@ Record the decision + reason here when made.
   self-describing in the value (survives tools that drop headers, e.g. sinks/replays), it stays close to what
   upstream Keycloak may adopt, and our `kc-*` headers still allow filtering without parsing. Revisit only
   with a concrete consumer need.
-- **D2 — `source` attribute.** `keycloak:<realmId>` (stable, opaque) vs. realm issuer URL (readable, changes
-  with hostname). Proposal: `keycloak:<realmId>`, issuer URL as extension later if asked.
+- **D2 — `source` attribute. Decided 2026-10-19: the realm issuer URL** — exactly the `iss` Keycloak puts in
+  tokens for that realm (`<frontend base>/realms/<realmName>`), computed in `onEvent` with `Urls.realmIssuer`;
+  fallback `urn:keycloak:realm:<realmId>` when no URL can be resolved (no HTTP context, no fixed hostname).
+  Why: matches token `iss` / OIDC discovery and distinguishes Keycloak deployments; `keycloak:<realmId>` only
+  repeats `kcrealmid`. Accepted cost: `source` changes on hostname change or realm rename and can vary per
+  request with `hostname-strict=false` — consumers partition/join on `kcrealmid`, never on `source`, and must
+  not trust `source` for authorization (README must say so). `<frontendUrl>:<realmName>` was rejected: not a
+  valid URI (realm name lands in the port position) and `frontendUrl` is unset by default. No `source-template`
+  in v1. Research: RESEARCH §3.2.
 - **D3 — config passthrough.** `producer-*` passthrough via `getPropertyNames()` vs. only
   `producer-properties-file`. Verified 2026-10-19 (RESEARCH §6.1): enumeration works for env (`__` form), CLI
   and keycloak.conf; keys come back fully prefixed; dash→dot mapping is lossless for all producer keys.
@@ -210,7 +217,8 @@ Record the decision + reason here when made.
 - [ ] `KafkaSender`: bounded queue + single sender thread + producer callbacks; injectable `Producer` so unit
       tests use Kafka's `MockProducer`; never blocks `offer`
 - [ ] Provider: `EventListenerTransaction` + `enlistAfterCompletion`; rollback drops; error-event inner-session
-      path covered by a test
+      path covered by a test; compute `source` per D2 (realm issuer from the *event* realm, fallback URN; never
+      throw) and cover user, error, brute-force and admin (incl. realm CREATE/DELETE) paths
 - [ ] Factory lifecycle: disabled-when-unconfigured, fail-fast on invalid config, `postInit` creates sender,
       `close()` drains with timeout; classloader-safe producer creation
 - [ ] E2E: login → record on `keycloak.events` (key, headers, envelope fields); wrong password →
