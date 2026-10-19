@@ -1,0 +1,36 @@
+{
+  "specversion": "1.0",
+  "id": "3e9f4b5d-8a7c-4f6e-ad1b-ac9f8e7d6c54",
+  "source": "keycloak:6b1e8f4a-3c2d-4e5f-8a9b-0c1d2e3f4a5b",
+  "type": "org.keycloak.admin.USER.CREATE",
+  "time": "2026-10-19T12:40:01.234Z",
+  "subject": "users/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "datacontenttype": "application/json",
+  "kcschemaversion": 1,
+  "kcrealmid": "6b1e8f4a-3c2d-4e5f-8a9b-0c1d2e3f4a5b",
+  "kcrealmname": "kafka-demo",
+  "kckind": "admin",
+  "data": {
+    "operationType": "CREATE",
+    "resourceType": "USER",
+    "resourcePath": "users/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "authDetails": {
+      "realmId": "11111111-2222-4333-8444-555555555555",
+      "realmName": "master",
+      "clientId": "0f9e8d7c-6b5a-4948-b736-251403f2e1d0",
+      "userId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "ipAddress": "172.18.0.1"
+    },
+    "representation": {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": false,
+      "firstName": "Alice",
+      "lastName": "Liddell",
+      "attributes": {
+        "department": ["engineering"]
+      }
+    }
+  }
+}

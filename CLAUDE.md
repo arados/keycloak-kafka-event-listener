@@ -81,8 +81,9 @@ These are the invariants every change must keep. Details and rationale in PLAN.m
   must not add measurable latency to logins.
 - **Publish only committed events** (async mode): buffer in Keycloak's `EventListenerTransaction`, enlisted via
   `session.getTransactionManager().enlistAfterCompletion(...)`; rollback discards.
-- **Do session work on the request thread.** Anything needing `KeycloakSession` / `RealmModel` (realm name,
-  etc.) happens in `onEvent`; the after-commit callback and sender thread must not touch the session.
+- **Do session work inside `onEvent`.** Anything needing `KeycloakSession` / `RealmModel` (issuer URL for
+  `source`, etc.) happens in `onEvent` — usually the request thread, but brute-force lockout events arrive on
+  Keycloak's `bruteforce` executor; the after-commit callback and sender thread must not touch the session.
 - **Envelope is a public contract.** CloudEvents-shaped JSON with `kcschemaversion`. Removing/renaming fields
   = new schema version + MAJOR release. Golden-fixture tests guard it.
 - **No secrets, ever.** Never export credentials, tokens, secrets, request bodies; redact sensitive `details`

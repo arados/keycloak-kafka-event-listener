@@ -57,6 +57,105 @@ Source: `server-spi-private/src/main/java/org/keycloak/events/EventBuilder.java`
   `EventListenerTransaction(BiConsumer<AdminEvent, Boolean>, Consumer<Event>)`.
 - Admin events: `onEvent(AdminEvent, boolean includeRepresentation)`.
 
+### 3.1 Event model getters (verified 2026-10-19 with `javap`, Keycloak 26.8.1)
+
+`Event`, `AdminEvent`, `AuthDetails`, `EventType`, `OperationType`, `ResourceType` live in
+**`keycloak-server-spi-private`** (not `keycloak-server-spi`). `JsonSerialization` is in `keycloak-core`.
+
+- `Event`: `getId`, `getTime` (epoch ms), `getType` (`EventType`), `getRealmId`, **`getRealmName`**, `getClientId`,
+  `getUserId`, `getSessionId`, `getIpAddress`, `getError`, `getDetails` (`Map<String,String>`, may be null).
+  `EventBuilder` calls `setRealmName`, so the realm name is on the event without a session lookup.
+- `AdminEvent`: `getId` (the event id; `getResourceId()` is derived from the last `resourcePath` segment),
+  `getTime`, `getRealmId`, `getRealmName`, `getAuthDetails`, `getOperationType`, `getResourcePath`,
+  `getRepresentation` (JSON **string**), `getError`, **`getDetails`** (`Map<String,String>`), `getResourceType`
+  (enum) and `getResourceTypeAsString` — the field is stored as a string (custom resource types), so use the
+  string getter.
+- `AuthDetails`: `getRealmId`, `getRealmName`, `getClientId`, `getUserId`, `getIpAddress`.
+- `AdminEventBuilder.representation(Object)` runs `StripSecretsUtils.stripSecrets(session, rep)` before
+  `JsonSerialization.writeValueAsString`, so Keycloak already masks secrets in admin representations.
+- `JsonSerialization.mapper` (Jackson 2.21.7): `Jdk8Module` + `JavaTimeModule`, `FAIL_ON_EMPTY_BEANS=false`,
+  default property inclusion `NON_NULL`. Records serialize fine.
+
+### 3.2 Resolving the realm issuer for `source` (D2, verified 2026-10-19 from 26.8.1 source)
+
+- CloudEvents 1.0: `source` is a required URI-reference (absolute URI recommended); only `source`+`id` must
+  be unique. <https://github.com/cloudevents/spec/blob/main/cloudevents/spec.md>
+- Issuer = `Urls.realmIssuer(baseUri, realmName)` (`services/.../services/Urls.java:166`, percent-encodes the
+  name) — what `TokenManager` and `OIDCWellKnownProvider` use. Base: realm attribute `frontendUrl` if set,
+  else `session.getContext().getUri(UrlType.FRONTEND).getBaseUri()` (`HostnameV2Provider`, cached per context).
+- Realm `frontendUrl` is read from the **context** realm by `HostnameV2Provider.getRealmFrontUriBuilder`, so
+  read the attribute from the **event** realm ourselves when the two differ.
+- Varies per request when `hostname-strict=false` (dev mode / Host header) or `hostname` is host-only
+  (scheme/port from the request). Stable when `hostname` is a full URL or the realm sets `frontendUrl`.
+- Dispatch paths:
+  - Error events: inner session from `runJobInTransactionWithResult` gets realm/client cloned
+    (`KeycloakModelUtils.java:418-545`) and `QuarkusKeycloakContext` resolves the HTTP request from
+    `CurrentRequestManager` on the same thread → `getUri()` works (code reading; confirm in e2e).
+  - Brute-force lockout events (`USER_DISABLED_BY_*_LOCKOUT`) run on the `bruteforce` executor thread with a
+    synthetic `BruteForceHttpRequest` (`DefaultBruteForceProtector.java:251-266`) → `getUri()` works. Hence the
+    design rule is "inside `onEvent`", not "on the request thread".
+  - Admin events: context realm = target realm (`RealmsAdminResource.java:230`) = `AdminEvent.realmId`,
+    **except** realm CREATE/DELETE which carry the admin's realm (`RealmsAdminResource.java:182-183,583-585`).
+    `authDetails.realmId` is the admin's realm — not for `source`.
+  - No HTTP context (scheduled jobs): `getUri()` throws `ContextNotActiveException` unless `frontendUrl` or a
+    full-URL `hostname` is set → catch and use `urn:keycloak:realm:<realmId>`.
+- Precedent: Keycloak SSF transmitter uses the realm issuer for SET `iss`
+  (`ssf/transmitter/.../support/SsfUtil.java:27-57`, chain: realm `frontendUrl` → `KC_HOSTNAME_URL` → full-URL
+  `hostname` → `ctx.getUri()`). Keycloak discussion #25133 proposes the realm admin URL (no maintainer reply).
+  No existing Keycloak→Kafka listener sets a CloudEvents `source`.
+
+### 3.3 Event `details` keys (verified 2026-10-19 from 26.8.1 source)
+
+- `org.keycloak.events.Details` (server-spi-private) is an **interface** with 103 `String` constants (all
+  `public static final`, distinct values). A few are values or prefixes, not keys: `ACTOR_TYPE_USER` ("user"),
+  `ACTOR_TYPE_CLIENT`, `CONSENT_VALUE_*`, `PREF_PREVIOUS` ("previous_"), `PREF_UPDATED` ("updated_").
+- **Over-redaction finding**: our first redaction rule, substring regex
+  `(?i)(password|secret|token|credential|otp|code_verifier)`, matched 24 of those 103 values, none of which holds
+  a secret: `access_token_expiration_time`, `age_of_refresh_token`, `credential_id`, `credential_type`,
+  `credential_user_label`, `logout_triggered_by_action_token`, `refresh_token_id`, `refresh_token_provider_id`,
+  `refresh_token_sub`, `refresh_token_type`, `requested_token_type`, `selected_credential_id`,
+  `subject_token_client_id`, `token_exchange_revoked_clients`, `token_id`, `token_issued_for`, `token_type`,
+  `updated_refresh_token_id`, `validate_access_token`, `verifiable_credential_format`,
+  `verifiable_credential_pre_authorized`, `verifiable_credential_target_client_id`,
+  `verifiable_credential_target_user_id`, `verifiable_credentials_issued`. These are what consumers correlate
+  on (token/session ids, credential type). Conversely a substring rule misses secrets stored under innocent names
+  by extensions. Hence the allowlist-based policy in PLAN "Envelope v1" (`envelope.DetailRedaction`).
+- Keycloak core never puts a password, client secret, token value or code verifier into `details` (no
+  `Details` constant names one); token-related details are ids and types.
+- Keys set by core **outside** `Details` (found with `git grep -nE '(^|[^A-Za-z])detail\('` over
+  `*/src/main/java` of the 26.8.1 tree, plus `getDetails().put`; paths relative to the Keycloak repo):
+  - `authenticator` — `services/.../authenticators/broker/IdpDetectExistingBrokerUserAuthenticator.java:67`
+  - `validation_method` — `services/.../broker/oidc/AbstractOAuth2IdentityProvider.java:923`,
+    `OIDCIdentityProvider.java:1027`, `services/.../social/bitbucket/BitbucketIdentityProvider.java:77`
+  - `detail` — `services/.../protocol/oidc/endpoints/AuthorizationEndpointChecker.java:481`,
+    `TokenIntrospectionEndpoint.java:212`, `services/.../protocol/oidc/par/endpoints/AbstractParEndpoint.java:97`
+  - `device_code_user_session_id` — `services/.../grants/device/endpoints/DeviceEndpoint.java:259`
+  - `existing_email`, `existing_username` — `"existing_" + attr` in
+    `services/.../authenticators/broker/IdpCreateUserIfUniqueAuthenticator.java:146` (attr is
+    `UserModel.EMAIL`/`USERNAME`, lines 167–190)
+  - `previous_username`, `updated_username` — `IdpReviewProfileAuthenticator.java:216-217` and the generic branch
+    of `services/.../userprofile/EventAuditingAttributeChangeListener.java:59`
+  - `previous_locale`, `updated_locale` — `services/.../locale/DefaultLocaleUpdaterProvider.java:49-50`
+  - `previous_identity_provider_identity` — `services/.../services/resources/IdentityBrokerService.java:994`
+  - `WebAuthnConstants` (`services/src/main/java/org/keycloak/WebAuthnConstants.java:67-83`, used by
+    `WebAuthnAuthenticator` and `WebAuthnRegister`): `public_key_credential_id`, `public_key_credential_label`,
+    `public_key_credential_aaguid`, `web_authn_authenticator_user_verification_checked`,
+    `web_authn_authenticated_user_id`, `first_authenticated_user_id`, `web_authn_authentication_error`,
+    `web_authn_authentication_error_detail`, `web_authn_registration_error`, `web_authn_registration_error_detail`
+  - `membershipType` — `MembershipType.NAME` (`core/.../representations/idm/MembershipType.java:31`) in
+    `services/.../organization/admin/resource/OrganizationMemberResource.java:275`
+  - `subject_issuer` — `OAuth2Constants.SUBJECT_ISSUER` in
+    `services/.../protocol/oidc/tokenexchange/AbstractTokenExchangeProvider.java:143`
+  - `SAML_LOGOUT_REQUEST_ID` — `services/.../protocol/saml/SamlProtocol.java:805`
+  - `apiVersion` (value `v2`) — `rest/admin-v2/services/.../events/admin/v2/AdminEventV2Builder.java:43`, on
+    every admin event from the v2 admin API
+  - `username`, `email` via `UserModel.USERNAME`/`EMAIL` — same values as `Details` constants.
+- Dynamic keys: `EventAuditingAttributeChangeListener` emits `previous_<attr>` / `updated_<attr>` for **any**
+  changed user-profile attribute (first/last name and email use the `Details` constants), so realms with custom
+  attributes produce realm-specific keys. They are not standard keys; operators allowlist them.
+- `ssf/transmitter/.../SecurityEventTokenMapper.java:1187,1207` puts `admin=true` on synthetic `Event`s it maps to
+  SSF tokens; those are not dispatched to event listeners, so `admin` is not in the list.
+
 ## 4. Keycloak's generic durable outbox (for the optional at-least-once mode)
 
 Added with SSF in 26.7.0 ([PR #48256](https://github.com/keycloak/keycloak/pull/48256), maintainer
