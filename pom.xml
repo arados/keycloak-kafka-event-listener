@@ -84,6 +84,15 @@
         </dependency>
 
         <!-- Test dependencies -->
+        <!-- A JAX-RS RuntimeDelegate for jakarta.ws.rs.core.UriBuilder, which Keycloak's Urls.realmIssuer
+             (the envelope `source`, decision D2) uses. Keycloak brings its own at runtime; unit tests need
+             one on the classpath. Same choice as keycloak-otp's otp-login module. -->
+        <dependency>
+            <groupId>org.jboss.resteasy</groupId>
+            <artifactId>resteasy-core</artifactId>
+            <version>6.2.19.Final</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

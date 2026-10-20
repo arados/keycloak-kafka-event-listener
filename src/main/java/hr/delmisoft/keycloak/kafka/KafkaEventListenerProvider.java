@@ -1,40 +1,113 @@
 package hr.delmisoft.keycloak.kafka;
 
+import hr.delmisoft.keycloak.kafka.envelope.Envelope;
+import hr.delmisoft.keycloak.kafka.envelope.EnvelopeContext;
+import hr.delmisoft.keycloak.kafka.envelope.EnvelopeMapper;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.keycloak.events.Event;
 import org.keycloak.events.EventListenerProvider;
 import org.keycloak.events.admin.AdminEvent;
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.KeycloakTransactionManager;
 
 /**
- * Per-session listener. Scaffold only: publishing is milestone M1 in docs/PLAN.md.
+ * Per-session listener (Keycloak creates one per {@link KeycloakSession}). See CLAUDE.md "Key design rules".
  *
- * <p>Design constraints for the implementation (see CLAUDE.md "Key design rules"):
- * never block the request thread on Kafka, publish only after the Keycloak
- * transaction commits, and never let a Kafka failure fail the user's request.
+ * <p>{@code onEvent} does all the work that needs the session and nothing that can block: filter, compute
+ * {@code source} ({@link EventSource}), map to the envelope, serialize, build the Kafka record, and buffer it in
+ * a {@link PublishAfterCommitTransaction}, which is enlisted with the session's transaction manager on the first
+ * published event. When the transaction commits, the records go to the sender's bounded queue; on rollback they
+ * are discarded. Kafka I/O happens on the sender thread only.
+ *
+ * <p>Dispatch paths, none of which needs special handling:
+ * <ul>
+ *   <li>success events: the request session, inside the request transaction;</li>
+ *   <li>error events: Keycloak's inner session ({@code KeycloakModelUtils.runJobInTransaction}), so another
+ *       provider instance with its own transaction, published when that inner transaction commits;</li>
+ *   <li>brute-force lockout events: Keycloak's {@code bruteforce} executor thread, with its own session and
+ *       transaction;</li>
+ *   <li>admin events: the admin request session.</li>
+ * </ul>
+ * Without an active transaction (none started, or already completed) there is nothing to wait for, and the
+ * record is handed over immediately.
+ *
+ * <p>Never throws and never blocks: any failure is counted and logged at most once per minute without event
+ * contents ({@link ListenerFailures}), and the event is not published.
  */
-public class KafkaEventListenerProvider implements EventListenerProvider {
+public final class KafkaEventListenerProvider implements EventListenerProvider {
 
     private final KeycloakSession session;
+    private final ListenerPipeline pipeline;
 
-    public KafkaEventListenerProvider(KeycloakSession session) {
+    /** This session's buffer; created and enlisted on the first published event. */
+    private PublishAfterCommitTransaction transaction;
+
+    KafkaEventListenerProvider(KeycloakSession session, ListenerPipeline pipeline) {
         this.session = session;
+        this.pipeline = pipeline;
     }
 
     @Override
     public void onEvent(Event event) {
-        // M1: map to envelope, enlist after-commit publish.
+        try {
+            if (!pipeline.filter().accepts(event)) {
+                return;
+            }
+            EventSource.Resolved realm = EventSource.resolve(session, event.getRealmId(), event.getRealmName());
+            Envelope envelope = pipeline.mapper().map(event, new EnvelopeContext(realm.source(), realm.realmName()));
+            publishAfterCommit(envelope);
+        } catch (RuntimeException | LinkageError e) {
+            pipeline.failures().record("preparing user event " + (event == null ? null : event.getType()), e);
+        }
     }
 
     @Override
     public void onEvent(AdminEvent event, boolean includeRepresentation) {
-        // M1: map to envelope (representation only when includeRepresentation), enlist after-commit publish.
+        try {
+            if (!pipeline.filter().accepts(event)) {
+                return;
+            }
+            EventSource.Resolved realm = EventSource.resolve(session, event.getRealmId(), event.getRealmName());
+            Envelope envelope = pipeline.mapper().map(event, includeRepresentation,
+                    new EnvelopeContext(realm.source(), realm.realmName()));
+            publishAfterCommit(envelope);
+        } catch (RuntimeException | LinkageError e) {
+            pipeline.failures().record("preparing admin event "
+                    + (event == null ? null : event.getResourceTypeAsString() + "." + event.getOperationType()), e);
+        }
+    }
+
+    private void publishAfterCommit(Envelope envelope) {
+        ProducerRecord<String, byte[]> record =
+                pipeline.recordFactory().create(envelope, EnvelopeMapper.toJsonBytes(envelope));
+        if (transaction != null && transaction.isActive()) {
+            transaction.add(record);
+            return;
+        }
+        KeycloakTransactionManager manager = session.getTransactionManager();
+        if (manager == null || !manager.isActive()) {
+            pipeline.sink().offer(record);
+            return;
+        }
+        PublishAfterCommitTransaction created = new PublishAfterCommitTransaction(pipeline.sink(), pipeline.failures());
+        try {
+            // Begins the transaction, since the manager is active.
+            manager.enlistAfterCompletion(created);
+        } catch (IllegalStateException alreadyCompleted) {
+            // Still "active" while it runs its after-completion transactions, but completed: an event fired from
+            // one of them reports work that is already committed.
+            pipeline.sink().offer(record);
+            return;
+        }
+        if (!created.isActive()) {
+            created.begin();
+        }
+        created.add(record);
+        transaction = created;
     }
 
     @Override
     public void close() {
-    }
-
-    KeycloakSession session() {
-        return session;
+        // Nothing to release: the transaction belongs to the session's transaction manager.
     }
 }
