@@ -297,12 +297,56 @@ class KafkaEventsConfigTest {
     }
 
     @Test
-    void outboxDeliveryModeIsNotSupportedYet() {
-        options.put("delivery-mode", "outbox");
+    void outboxDeliveryModeIsAcceptedWithDefaults() {
+        options.put("delivery-mode", "Outbox");
+
+        KafkaEventsConfig config = loadConfigured();
+
+        assertThat(config.deliveryMode(), is(DeliveryMode.OUTBOX));
+        assertThat(config.outbox(), equalTo(OutboxOptions.DEFAULTS));
+    }
+
+    @Test
+    void outboxOptionsAreParsed() {
+        options.put("outbox-drain-interval-ms", "2500");
+        options.put("outbox-batch-size", "50");
+        options.put("outbox-max-attempts", "3");
+        options.put("outbox-delivered-retention-ms", "60000");
+        options.put("outbox-dead-letter-retention-ms", "0");
+        options.put("outbox-pending-max-age-ms", "86400000");
+
+        OutboxOptions outbox = loadConfigured().outbox();
+
+        assertThat(outbox, equalTo(new OutboxOptions(Duration.ofMillis(2500), 50, 3, Duration.ofMinutes(1),
+                Duration.ZERO, Duration.ofDays(1))));
+    }
+
+    @Test
+    void outboxDrainIntervalBelowOneSecondIsRejected() {
+        options.put("outbox-drain-interval-ms", "500");
 
         String message = loadConfiguredFails().getMessage();
 
-        assertThat(message, allOf(containsString(PREFIX + "delivery-mode"), containsString("not supported yet")));
+        assertThat(message, allOf(containsString(PREFIX + "outbox-drain-interval-ms"),
+                containsString("at least 1000")));
+    }
+
+    @Test
+    void deadLetterRetentionMustOutlastThePendingMaxAge() {
+        options.put("outbox-pending-max-age-ms", "86400000");
+        options.put("outbox-dead-letter-retention-ms", "86400000");
+
+        String message = loadConfiguredFails().getMessage();
+
+        assertThat(message, allOf(containsString(PREFIX + "outbox-dead-letter-retention-ms"),
+                containsString("outbox-pending-max-age-ms")));
+    }
+
+    @Test
+    void outboxBatchSizeMustBePositive() {
+        options.put("outbox-batch-size", "0");
+
+        assertThat(loadConfiguredFails().getMessage(), containsString(PREFIX + "outbox-batch-size"));
     }
 
     @Test
@@ -311,7 +355,8 @@ class KafkaEventsConfigTest {
 
         String message = loadConfiguredFails().getMessage();
 
-        assertThat(message, allOf(containsString(PREFIX + "delivery-mode"), containsString("'sync'")));
+        assertThat(message, allOf(containsString(PREFIX + "delivery-mode"), containsString("'sync'"),
+                containsString("async, outbox")));
     }
 
     // --- numbers -----------------------------------------------------------------------------------------

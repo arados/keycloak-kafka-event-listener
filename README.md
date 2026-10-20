@@ -15,8 +15,7 @@ CloudEvents JSON.
 - TLS / SASL and any other Kafka producer setting
 - Safe defaults: no credentials or tokens, unknown event details redacted, admin representations off
 - Prometheus metrics through Keycloak's metrics endpoint
-
-Planned: an optional at-least-once mode using Keycloak's durable outbox.
+- Optional at-least-once delivery through Keycloak's durable outbox table (`delivery-mode=outbox`)
 
 ## Quick start (development)
 
@@ -84,9 +83,15 @@ stops Keycloak at startup with a message naming the option. Kafka being *unreach
 | `include-representation` | `false` | Admin events: include the resource representation (`data.representation`) when Keycloak provides one (realm *Include representation* on). |
 | `allowed-detail-keys` | — | Comma list of extra event `details` keys to pass through unredacted (keys set by your extensions). Case-insensitive. Cannot un-redact the built-in denylist. |
 | `redacted-detail-keys` | — | Comma list of extra `details` keys to always redact. Case-insensitive; wins over everything. |
-| `delivery-mode` | `async` | Only `async` (at-most-once, see [Delivery](#delivery-guarantees)) exists today; `outbox` is planned. |
-| `queue-capacity` | `10000` | Maximum number of committed events waiting for the sender thread. Full → new events are dropped and counted. |
-| `close-timeout-ms` | `5000` | Shutdown budget for sending what is still queued and closing the producer. |
+| `delivery-mode` | `async` | `async`: at-most-once through an in-memory queue. `outbox`: at-least-once through Keycloak's outbox table. See [Delivery](#delivery-guarantees). |
+| `queue-capacity` | `10000` | Async mode: maximum number of committed events waiting for the sender thread. Full → new events are dropped and counted. |
+| `close-timeout-ms` | `5000` | Shutdown budget for sending what is still queued (async) and closing the producer. |
+| `outbox-drain-interval-ms` | `1000` | Outbox mode: how often the outbox is drained (at least 1000). |
+| `outbox-batch-size` | `500` | Outbox mode: events sent per drain run. |
+| `outbox-max-attempts` | `10` | Outbox mode: attempts for an event Kafka *rejects* (e.g. not authorized for the topic) before it is dead-lettered. Kafka being unreachable never counts as an attempt. |
+| `outbox-delivered-retention-ms` | `0` | Outbox mode: how long delivered rows stay in the table; `0` deletes them on delivery. |
+| `outbox-dead-letter-retention-ms` | `1209600000` (14 days) | Outbox mode: how long dead-lettered rows are kept, counted from the event's creation; `0` keeps them forever. Must exceed `outbox-pending-max-age-ms`. |
+| `outbox-pending-max-age-ms` | `604800000` (7 days) | Outbox mode: events still undelivered after this are dead-lettered; `0` never gives up. |
 | `producer-properties-file` | — | Path of a Java `.properties` file (UTF-8) with Kafka producer settings. The place for TLS/SASL settings and secrets. |
 | `producer-<kafka-key>` | — | Any Kafka producer setting, with the dots of the Kafka key written as dashes: `producer-linger-ms=50` → `linger.ms=50`. |
 
@@ -281,6 +286,19 @@ There is no ordering across keys or topics.
 
 ## Delivery guarantees
 
+Two modes, chosen with `delivery-mode`:
+
+| | `async` (default) | `outbox` |
+|---|---|---|
+| Guarantee | at-most-once | at-least-once (duplicates keep the same `id`) |
+| Captured | after the Keycloak transaction commits, in memory | in the Keycloak transaction, in the database |
+| Kafka down | queue fills, then events are dropped | events wait in the database until Kafka is back |
+| Keycloak crash | queued events are lost | nothing is lost |
+| Cost per event | none on the request thread | one database insert in the request's transaction |
+| Ordering per key | kept | kept, except that a retried event can arrive after later ones |
+
+### `async`
+
 Delivery is **at-most-once**:
 
 - **Only committed events.** Events are prepared during the request but handed to the sender only after
@@ -300,6 +318,40 @@ Delivery is **at-most-once**:
 - **Shutdown** sends what is queued for up to `close-timeout-ms`, then drops the rest (logged). A crash loses
   the queue.
 
+### `outbox`
+
+`onEvent` writes each event into Keycloak's own `OUTBOX_ENTRY` table (Keycloak 26.7+, created by Keycloak's
+database migration; rows have `ENTRY_KIND = kafka-events`) **in the same database transaction** as the Keycloak
+work that produced it. A rolled-back request leaves no row; a committed one cannot lose its event, even if Keycloak
+crashes right after. Every node runs a drainer task every `outbox-drain-interval-ms`; Keycloak's cluster lock makes
+one node drain at a time. Each run locks up to `outbox-batch-size` rows, sends them, and waits for Kafka's
+acknowledgements on its own thread:
+
+- **acknowledged** → the row is deleted (or kept for `outbox-delivered-retention-ms`);
+- **Kafka unreachable or a retriable error** (timeouts, not enough replicas…) → retried on the next run without
+  counting an attempt, so an outage never dead-letters events and delivery resumes within a second of Kafka
+  coming back;
+- **the record can never be accepted** (too large, invalid topic) → dead-lettered at once;
+- **anything else Kafka rejects** (e.g. not authorized for the topic) → retried with backoff (1 s, 5 s, 30 s,
+  2 min, 10 min, then hourly), dead-lettered after `outbox-max-attempts`.
+
+Dead-lettered rows stay in `OUTBOX_ENTRY` with `STATUS = 'DEAD_LETTER'` and the error in `LAST_ERROR` for
+`outbox-dead-letter-retention-ms`; events still undelivered after `outbox-pending-max-age-ms` are dead-lettered
+too. A send whose acknowledgement was lost is sent again with the same envelope `id`, so **consumers must
+deduplicate on `id`**.
+
+Things to know:
+
+- The insert happens synchronously on the request thread, like Keycloak's own event store. If the database
+  rejects it, the request fails, as it would for any other Keycloak write. Kafka itself is never contacted on the
+  request thread.
+- The outbox classes are **Keycloak internals**, not a public SPI (`org.keycloak.events.outbox`, used by
+  Keycloak's SSF support). They may change in any Keycloak minor release, so this mode is tested against the exact
+  Keycloak version in [Compatibility](#compatibility); `async` mode only uses the event listener SPI.
+- The outbox gauges ([Metrics](#metrics)) are refreshed by the node that last drained.
+
+### Kafka client logs
+
 Kafka's client logs its own connection warnings (`org.apache.kafka.clients.NetworkClient`) while a broker is
 unreachable; raise that category's level, e.g. `KC_LOG_LEVEL=INFO,org.apache.kafka:error`, if they are too noisy.
 
@@ -317,6 +369,10 @@ Keycloak's own:
 | `keycloak_kafka_events_dropped_total` | counter | `kind`, `reason` | Events not published: `queue_full`, `shutdown`, `filtered` (include/exclude options), `error` (the listener failed to prepare the event) |
 | `keycloak_kafka_events_queue_size` | gauge | — | Events waiting in the in-memory queue |
 | `keycloak_kafka_events_queue_capacity` | gauge | — | `queue-capacity` |
+| `keycloak_kafka_events_dead_lettered_total` | counter | `kind` | Outbox mode: events given up on |
+| `keycloak_kafka_events_outbox_pending` | gauge | — | Outbox mode: rows waiting for delivery |
+| `keycloak_kafka_events_outbox_dead_letters` | gauge | — | Outbox mode: dead-lettered rows not purged yet |
+| `keycloak_kafka_events_outbox_oldest_pending_age_seconds` | gauge | — | Outbox mode: age of the oldest undelivered row; alert when it grows |
 
 `kind` is `user` or `admin`. Useful alerts: `rate(keycloak_kafka_events_dropped_total{reason="queue_full"}[5m]) > 0`,
 `rate(keycloak_kafka_events_failed_total[5m]) > 0`, and `queue_size / queue_capacity` above, say, 0.5.
@@ -359,7 +415,7 @@ These extract a native library to `java.io.tmpdir` on first use, so it must be w
 
 | Component | Version |
 |---|---|
-| Keycloak | 26.8.x (built and tested against 26.8.1) |
+| Keycloak | 26.8.x (built and tested against 26.8.1). `delivery-mode=outbox` relies on Keycloak-internal outbox classes and is only tested against that exact version |
 | Java | 21 (as in the Keycloak image) |
 | Kafka client | `kafka-clients` 4.4.0, bundled |
 | Kafka brokers | those `kafka-clients` 4.4.0 supports: 2.1 or newer; tested with Apache Kafka 4.3.1 (KRaft) |

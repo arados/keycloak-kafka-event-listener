@@ -23,9 +23,11 @@ A Keycloak bump is a **MINOR** release per CLAUDE.md versioning rules.
    ```
    If Keycloak now ships one of the bundled libs (or dropped slf4j/jackson/micrometer), adjust
    the shade `<artifactSet>` in `pom.xml` and record the finding in docs/RESEARCH.md §5 (local notes, git-ignored).
-5. If the plugin uses anything from `org.keycloak.events.outbox` / `model/jpa` internals (planned M3),
-   diff those classes between the old and new tag:
-   `gh api repos/keycloak/keycloak/compare/OLD...NEW --jq '.files[].filename' | grep -E 'events/outbox|EventBuilder|EventListener'`.
+5. Outbox mode uses Keycloak internals (`org.keycloak.events.outbox.OutboxStore`, `OutboxEntryEntity` and its
+   `OUTBOX_ENTRY` changelog in `model/jpa`, `ClusterAwareScheduledTaskRunner` in `model/storage-private`,
+   `PostMigrationEvent`, `TimerProvider`). Diff them between the old and new tag:
+   `gh api repos/keycloak/keycloak/compare/OLD...NEW --jq '.files[].filename' | grep -E 'events/outbox|OutboxEntry|ClusterAwareScheduledTaskRunner|jpa-changelog|EventBuilder|EventListener'`
+   and adapt `outbox.KeycloakOutboxRepository` / `outbox.KafkaOutbox`; `outbox-kafka-down.spec.js` must pass.
    Also re-check event `details` keys Keycloak sets outside `org.keycloak.events.Details` (the `Details`
    constants are read by reflection; the rest are hard-coded in `DetailRedaction.EXTRA_STANDARD_KEYS`): in a
    checkout of the new tag run `git grep -nE '(^|[^A-Za-z])detail\(' -- '*/src/main/java/*.java'` and compare

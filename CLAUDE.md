@@ -28,8 +28,8 @@ Keycloak event listener SPI plugin that publishes Keycloak **user events** and *
 - **Java**: 21
 - **Provider id**: `kafka-events` (Realm settings → Events → Event listeners)
 - **Package**: `hr.delmisoft.keycloak.kafka`
-- **Status**: M1 publishing works end to end (async, at-most-once; unit + e2e tested), not released yet; next
-  tasks in PLAN.md
+- **Status**: async (at-most-once) and outbox (at-least-once) delivery, metrics, TLS/SASL; unit + e2e tested;
+  not released yet
 
 Sibling project `../keycloak-otp` (same author) is the template this repo was created from: same build,
 CI, e2e wiring, versioning rules and test style (otp is multi-module because it ships several features; this
@@ -40,7 +40,8 @@ especially `otp-login`'s after-commit async delivery (`enlistAfterCompletion` �
 
 ```
 pom.xml     — the only Maven module; maven-shade-plugin bundles kafka-clients + lz4-java (no native libs, D4); `e2e` profile
-src/        — EventListenerProvider(+Factory), config, envelope, routing, sender; unit tests
+src/        — EventListenerProvider(+Factory), config, envelope, routing, sender, metrics, outbox; unit tests
+docker/     — `secure` compose profile setup (demo certs, SCRAM client config)
 e2e/        — Playwright tests against the docker compose stack (plain npm project, run by the `e2e` profile)
 docs/       — local only, git-ignored: PLAN.md (work plan), RESEARCH.md (verified background)
 .claude/    — shared Claude Code settings, hooks, skills (see "Claude Code setup")
@@ -86,7 +87,8 @@ docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstra
   cert, truststore and `kafka-client.properties` into a volume; `kafka-secure` has SASL_SSL on `:9095` (SCRAM
   user created by `kafka-secure-init`) plus in-network PLAINTEXT `:9092` for the console tools;
   `keycloak-secure` (Dockerfile target `keycloak-zstd`, which adds zstd-jni to `providers/`) publishes over
-  SASL_SSL with `compression.type=zstd`
+  SASL_SSL with `compression.type=zstd` and `delivery-mode=outbox` (`outbox-kafka-down.spec.js` stops
+  `kafka-secure`, its own Playwright project like `kafka-down.spec.js`)
 - The user also runs an unrelated `kafka` container on host ports 9092/29092 — don't touch it; this stack
   only publishes 8080, 9000, 9094 (and 8081 with the `ui` profile)
 
@@ -96,9 +98,10 @@ Use the **`verify-events`** skill to exercise the stack end to end.
 
 These are the invariants every change must keep. Details and rationale in PLAN.md "Design".
 
-- **Never block or fail the request.** `onEvent` only filters, maps to bytes and buffers. Kafka I/O happens
-  on our own sender thread. A full queue drops (and counts) instead of waiting. Kafka down/slow/misconfigured
-  must not add measurable latency to logins.
+- **Never block or fail the request.** `onEvent` only filters, maps to bytes and buffers (async) or inserts one
+  outbox row (outbox mode). Kafka I/O happens on our own threads (sender / outbox drainer), never on the request
+  thread or Keycloak's shared timer thread. A full queue drops (and counts) instead of waiting. Kafka
+  down/slow/misconfigured must not add measurable latency to logins.
 - **Publish only committed events** (async mode): buffer the records built in `onEvent` in our own
   after-completion transaction (`PublishAfterCommitTransaction`, not Keycloak's `EventListenerTransaction`, which
   maps at commit time), enlisted via `session.getTransactionManager().enlistAfterCompletion(...)`; commit only
@@ -119,8 +122,14 @@ These are the invariants every change must keep. Details and rationale in PLAN.m
   slf4j, jackson, micrometer — never shade those. Re-check on Keycloak bumps (`bump-keycloak` skill).
 - **Producer creation is classloader-safe**: pass serializer instances; set the TCCL to the plugin classloader
   while constructing the producer.
-- Keycloak internals (`model/jpa` outbox, `server-spi-private`) are allowed but must be isolated behind our own
-  interfaces and called out in docs, because they can change in any Keycloak minor.
+- **Outbox mode** (`outbox/`): `OutboxWriter` inserts in the dispatching transaction (own transaction if the
+  session's is completed); `KafkaOutboxDrainer` (a `ScheduledTask`, scheduled after `PostMigrationEvent` via
+  `ClusterAwareScheduledTaskRunner`, run on our `kafka-events-outbox` thread) sends and classifies: unreachable /
+  retriable → retry without counting an attempt; too large / invalid topic → dead letter; other → backoff +
+  `outbox-max-attempts`. Its simple class name is Keycloak's cluster lock key — keep it unique.
+- Keycloak internals (`model/jpa` outbox, `model/storage-private` cluster runner, `server-spi-private`) are
+  allowed but must be isolated behind our own interfaces and called out in docs, because they can change in any
+  Keycloak minor. Only `outbox.KeycloakOutboxRepository` and `outbox.KafkaOutbox` touch the outbox internals.
 
 ## Testing
 

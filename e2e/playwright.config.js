@@ -22,7 +22,14 @@ module.exports = defineConfig({
       // Stops and restarts the broker: runs only after every other test has finished.
       name: 'kafka-down',
       use: { browserName: 'chromium' },
-      testMatch: /kafka-down\.spec\.js/,
+      testMatch: /(^|\/)kafka-down\.spec\.js/,
+      dependencies: ['chromium'],
+    },
+    {
+      // Stops and restarts the secure stack's broker (outbox mode): also after every other test.
+      name: 'outbox-kafka-down',
+      use: { browserName: 'chromium' },
+      testMatch: /outbox-kafka-down\.spec\.js/,
       dependencies: ['chromium'],
     },
   ],

@@ -10,6 +10,12 @@ import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_INCLUDE_ADMIN_RES
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_INCLUDE_EVENT_TYPES;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_INCLUDE_IP_ADDRESS;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_INCLUDE_REPRESENTATION;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_BATCH_SIZE;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_DEAD_LETTER_RETENTION_MS;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_DELIVERED_RETENTION_MS;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_DRAIN_INTERVAL_MS;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_MAX_ATTEMPTS;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_PENDING_MAX_AGE_MS;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_PRODUCER_PROPERTIES_FILE;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_QUEUE_CAPACITY;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_REDACTED_DETAIL_KEYS;
@@ -43,6 +49,7 @@ public final class ConfigMetadata {
     }
 
     public static List<ProviderConfigProperty> options() {
+        OutboxOptions defaults = OutboxOptions.DEFAULTS;
         return ProviderConfigurationBuilder.create()
                 .property().name(CFG_BOOTSTRAP_SERVERS).type(STRING_TYPE)
                 .helpText("Kafka bootstrap servers, host:port[,host:port]. Unset = listener disabled.").add()
@@ -72,13 +79,30 @@ public final class ConfigMetadata {
                 .helpText("Comma list of extra event details keys that are always redacted.").add()
                 .property().name(CFG_DELIVERY_MODE).type(LIST_TYPE).options(DeliveryMode.names())
                 .defaultValue(DeliveryMode.ASYNC.optionValue())
-                .helpText("async: after commit via an in-memory queue (at-most-once).").add()
+                .helpText("async: after commit via an in-memory queue (at-most-once); outbox: through Keycloak's"
+                        + " OUTBOX_ENTRY table (at-least-once).").add()
                 .property().name(CFG_QUEUE_CAPACITY).type(INTEGER_TYPE).defaultValue(DEFAULT_QUEUE_CAPACITY)
                 .helpText("Async mode: events buffered in memory; a full queue drops events.").add()
                 .property().name(CFG_CLOSE_TIMEOUT_MS).type(INTEGER_TYPE).defaultValue(DEFAULT_CLOSE_TIMEOUT_MS)
                 .helpText("Shutdown budget for sending queued events, in milliseconds.").add()
                 .property().name(CFG_PRODUCER_PROPERTIES_FILE).type(STRING_TYPE)
                 .helpText("Path to a .properties file with Kafka producer settings (TLS/SASL secrets).").add()
+                .property().name(CFG_OUTBOX_DRAIN_INTERVAL_MS).type(INTEGER_TYPE)
+                .defaultValue(defaults.drainInterval().toMillis())
+                .helpText("Outbox mode: how often the outbox is drained, in milliseconds (at least 1000).").add()
+                .property().name(CFG_OUTBOX_BATCH_SIZE).type(INTEGER_TYPE).defaultValue(defaults.batchSize())
+                .helpText("Outbox mode: events sent per drain run.").add()
+                .property().name(CFG_OUTBOX_MAX_ATTEMPTS).type(INTEGER_TYPE).defaultValue(defaults.maxAttempts())
+                .helpText("Outbox mode: attempts for events Kafka rejects before they are dead-lettered.").add()
+                .property().name(CFG_OUTBOX_DELIVERED_RETENTION_MS).type(INTEGER_TYPE)
+                .defaultValue(defaults.deliveredRetention().toMillis())
+                .helpText("Outbox mode: how long delivered rows are kept, in milliseconds; 0 deletes them.").add()
+                .property().name(CFG_OUTBOX_DEAD_LETTER_RETENTION_MS).type(INTEGER_TYPE)
+                .defaultValue(defaults.deadLetterRetention().toMillis())
+                .helpText("Outbox mode: how long dead-lettered rows are kept, in milliseconds; 0 = forever.").add()
+                .property().name(CFG_OUTBOX_PENDING_MAX_AGE_MS).type(INTEGER_TYPE)
+                .defaultValue(defaults.pendingMaxAge().toMillis())
+                .helpText("Outbox mode: undelivered rows older than this are dead-lettered; 0 = never.").add()
                 .build();
     }
 }
