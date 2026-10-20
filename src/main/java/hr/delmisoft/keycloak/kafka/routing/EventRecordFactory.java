@@ -5,6 +5,7 @@ import hr.delmisoft.keycloak.kafka.envelope.Envelope;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 
 /**
@@ -68,6 +69,15 @@ public final class EventRecordFactory {
         add(headers, HEADER_SCHEMA_VERSION, Integer.toString(envelope.kcschemaversion()));
         return new ProducerRecord<>(
                 topicRouter.topicFor(envelope), null, keyStrategy.keyFor(envelope), value, headers);
+    }
+
+    /**
+     * The {@value #HEADER_KIND} header of a record built here ({@code user} or {@code admin}); {@code null} when
+     * absent. Used to tag metrics.
+     */
+    public static String kindOf(ProducerRecord<?, ?> record) {
+        Header header = record.headers().lastHeader(HEADER_KIND);
+        return header == null || header.value() == null ? null : new String(header.value(), StandardCharsets.UTF_8);
     }
 
     private static void add(RecordHeaders headers, String name, String value) {

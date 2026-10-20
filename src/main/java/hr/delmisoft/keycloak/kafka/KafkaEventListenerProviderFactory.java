@@ -3,19 +3,23 @@ package hr.delmisoft.keycloak.kafka;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_BOOTSTRAP_SERVERS;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.OPTION_PREFIX;
 
+import hr.delmisoft.keycloak.kafka.config.ConfigMetadata;
 import hr.delmisoft.keycloak.kafka.config.KafkaEventsConfig;
 import hr.delmisoft.keycloak.kafka.envelope.DetailRedaction;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeMapper;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeOptions;
+import hr.delmisoft.keycloak.kafka.metrics.MicrometerEventMetrics;
 import hr.delmisoft.keycloak.kafka.routing.EventFilter;
 import hr.delmisoft.keycloak.kafka.routing.EventRecordFactory;
 import hr.delmisoft.keycloak.kafka.sender.KafkaProducers;
 import hr.delmisoft.keycloak.kafka.sender.KafkaSender;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import org.apache.kafka.clients.producer.Producer;
 import org.jboss.logging.Logger;
 import org.keycloak.Config;
@@ -25,6 +29,7 @@ import org.keycloak.events.EventListenerProviderFactory;
 import org.keycloak.events.admin.AdminEvent;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.provider.ProviderConfigProperty;
 
 /**
  * Registers the {@value KafkaEventsConst#PROVIDER_ID} event listener and owns the server-wide parts: the
@@ -35,10 +40,10 @@ import org.keycloak.models.KeycloakSessionFactory;
  *       disabled: one WARN, and {@link #create} hands out a no-op provider. Misconfigured = fail fast: the
  *       {@code KafkaEventsConfigException} (naming the option) propagates and Keycloak does not start.</li>
  *   <li>{@link #postInit}: creates the producer (this does not contact the broker, so Kafka being down never
- *       fails startup; a producer Kafka refuses to construct is a configuration error and does) and starts the
- *       sender thread.</li>
+ *       fails startup; a producer Kafka refuses to construct is a configuration error and does), registers the
+ *       metrics and starts the sender thread.</li>
  *   <li>{@link #close}: stops accepting, drains the queue for at most {@code close-timeout-ms}, closes the
- *       producer. Idempotent.</li>
+ *       producer, removes the metrics. Idempotent.</li>
  * </ul>
  */
 public final class KafkaEventListenerProviderFactory implements EventListenerProviderFactory {
@@ -49,24 +54,31 @@ public final class KafkaEventListenerProviderFactory implements EventListenerPro
     private static final EventListenerProvider DISABLED = new DisabledProvider();
 
     private final Function<Map<String, String>, Producer<String, byte[]>> producerFactory;
-    private final ListenerFailures failures = new ListenerFailures();
+    private final Supplier<MicrometerEventMetrics> metricsFactory;
 
     private KafkaEventsConfig config;
     private EventFilter filter;
     private EnvelopeMapper mapper;
     private EventRecordFactory recordFactory;
     private KafkaSender sender;
+    private MicrometerEventMetrics metrics;
+    private ListenerFailures failures;
 
     /** Read by request threads in {@link #create}; {@code null} = disabled. */
     private volatile ListenerPipeline pipeline;
 
     public KafkaEventListenerProviderFactory() {
-        this(KafkaProducers::create);
+        this(KafkaProducers::create, MicrometerEventMetrics::new);
     }
 
-    /** For tests: {@code producerFactory} replaces {@link KafkaProducers#create} (e.g. with a MockProducer). */
-    KafkaEventListenerProviderFactory(Function<Map<String, String>, Producer<String, byte[]>> producerFactory) {
+    /**
+     * For tests: {@code producerFactory} replaces {@link KafkaProducers#create} (e.g. with a MockProducer),
+     * {@code metricsFactory} the global Micrometer registry.
+     */
+    KafkaEventListenerProviderFactory(Function<Map<String, String>, Producer<String, byte[]>> producerFactory,
+            Supplier<MicrometerEventMetrics> metricsFactory) {
         this.producerFactory = Objects.requireNonNull(producerFactory, "producerFactory");
+        this.metricsFactory = Objects.requireNonNull(metricsFactory, "metricsFactory");
     }
 
     @Override
@@ -109,8 +121,10 @@ public final class KafkaEventListenerProviderFactory implements EventListenerPro
         // Throws ProducerCreationException (no setting values in the message) when Kafka rejects the settings or
         // a codec JAR is missing: Keycloak then refuses to start.
         Producer<String, byte[]> producer = producerFactory.apply(config.producerProperties());
-        sender = KafkaSender.start(producer, config.queueCapacity(), config.closeTimeout());
-        pipeline = new ListenerPipeline(filter, mapper, recordFactory, sender::offer, failures);
+        metrics = metricsFactory.get();
+        failures = new ListenerFailures(metrics);
+        sender = KafkaSender.start(producer, config.queueCapacity(), config.closeTimeout(), metrics);
+        pipeline = new ListenerPipeline(filter, mapper, recordFactory, sender::offer, failures, metrics);
     }
 
     @Override
@@ -122,10 +136,16 @@ public final class KafkaEventListenerProviderFactory implements EventListenerPro
             return;
         }
         current.close();
+        metrics.close();
         long failed = failures.count();
         if (failed > 0) {
             LOG.infof("Kafka event listener: %d events could not be prepared for publishing since startup", failed);
         }
+    }
+
+    @Override
+    public List<ProviderConfigProperty> getConfigMetadata() {
+        return ConfigMetadata.options();
     }
 
     @Override

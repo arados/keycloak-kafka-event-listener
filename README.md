@@ -14,8 +14,9 @@ CloudEvents JSON.
 - Two topics by default (`keycloak.events`, `keycloak.admin-events`), topic templates and per-type overrides
 - TLS / SASL and any other Kafka producer setting
 - Safe defaults: no credentials or tokens, unknown event details redacted, admin representations off
+- Prometheus metrics through Keycloak's metrics endpoint
 
-Planned: metrics, an optional at-least-once mode using Keycloak's durable outbox (see the plan).
+Planned: an optional at-least-once mode using Keycloak's durable outbox.
 
 ## Quick start (development)
 
@@ -286,14 +287,33 @@ Delivery is **at-most-once**:
   Kafka up (the e2e test checks < 500 ms; locally ~30 ms either way).
 - **Kafka down or slow → queue, then drop.** While the broker is unreachable, the sender waits up to
   `max.block.ms` per event for metadata; the queue absorbs the backlog and, once full, further events are
-  dropped. Records Kafka doesn't acknowledge within `delivery.timeout.ms` fail. Both are counted and failures
-  logged at most once a minute; the counts are in the log line the listener writes at shutdown (metrics are
-  planned). Publishing resumes by itself when Kafka is back.
+  dropped. Records Kafka doesn't acknowledge within `delivery.timeout.ms` fail. Both are counted
+  ([Metrics](#metrics)) and logged at most once a minute each; the totals are also in the log line the
+  listener writes at shutdown. Publishing resumes by itself when Kafka is back.
 - **Shutdown** sends what is queued for up to `close-timeout-ms`, then drops the rest (logged). A crash loses
   the queue.
 
 Kafka's client logs its own connection warnings (`org.apache.kafka.clients.NetworkClient`) while a broker is
 unreachable; raise that category's level, e.g. `KC_LOG_LEVEL=INFO,org.apache.kafka:error`, if they are too noisy.
+
+## Metrics
+
+The listener registers Micrometer meters in Keycloak's registry. Start Keycloak with `metrics-enabled=true`
+(a build option) and they appear on the management interface, `http://<host>:9000/metrics`, next to
+Keycloak's own:
+
+| Prometheus name | Type | Labels | Meaning |
+|---|---|---|---|
+| `keycloak_kafka_events_enqueued_total` | counter | `kind` | Committed events accepted for sending |
+| `keycloak_kafka_events_sent_total` | counter | `kind`, `topic` | Events Kafka acknowledged |
+| `keycloak_kafka_events_failed_total` | counter | `kind`, `reason` | Send attempts that failed; `reason` is the exception's simple class name, e.g. `TimeoutException` |
+| `keycloak_kafka_events_dropped_total` | counter | `kind`, `reason` | Events not published: `queue_full`, `shutdown`, `filtered` (include/exclude options), `error` (the listener failed to prepare the event) |
+| `keycloak_kafka_events_queue_size` | gauge | — | Events waiting in the in-memory queue |
+| `keycloak_kafka_events_queue_capacity` | gauge | — | `queue-capacity` |
+
+`kind` is `user` or `admin`. Useful alerts: `rate(keycloak_kafka_events_dropped_total{reason="queue_full"}[5m]) > 0`,
+`rate(keycloak_kafka_events_failed_total[5m]) > 0`, and `queue_size / queue_capacity` above, say, 0.5.
+Without `metrics-enabled` the meters cost next to nothing and are not exposed.
 
 ## Privacy
 

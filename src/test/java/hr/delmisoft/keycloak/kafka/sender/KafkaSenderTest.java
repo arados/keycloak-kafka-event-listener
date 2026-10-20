@@ -2,12 +2,18 @@ package hr.delmisoft.keycloak.kafka.sender;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThan;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+import hr.delmisoft.keycloak.kafka.metrics.EventMetrics;
+import hr.delmisoft.keycloak.kafka.metrics.MicrometerEventMetrics;
+import hr.delmisoft.keycloak.kafka.routing.EventRecordFactory;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -39,6 +45,8 @@ class KafkaSenderTest {
 
     private static final Duration CLOSE_TIMEOUT = Duration.ofSeconds(5);
 
+    private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    private final MicrometerEventMetrics metrics = new MicrometerEventMetrics(registry);
     private final List<KafkaSender> senders = new ArrayList<>();
     private final List<GatedProducer> gates = new ArrayList<>();
 
@@ -46,6 +54,7 @@ class KafkaSenderTest {
     void cleanUp() {
         gates.forEach(GatedProducer::release);
         senders.forEach(KafkaSender::close);
+        metrics.close();
     }
 
     @Test
@@ -104,6 +113,56 @@ class KafkaSenderTest {
         producer.release();
         sender.close();
         assertThat(sender.stats().sent(), equalTo(101L));
+    }
+
+    @Test
+    void reportsOutcomesToMetricsTaggedWithTheRecordKind() throws InterruptedException {
+        var producer = gated(true);
+        var sender = start(producer, 2, CLOSE_TIMEOUT);
+        sender.offer(record("events", "stuck", "user"));
+        assertThat(producer.entered.await(WAIT.toSeconds(), TimeUnit.SECONDS), is(true));
+
+        sender.offer(record("admin-events", "a", "admin"));
+        sender.offer(record("events", "b", "user"));
+        sender.offer(record("events", "full", "user"));
+        sender.offer(record("events", "untagged"));
+
+        assertThat(gauge("keycloak.kafka.events.queue.size"), equalTo(2.0));
+        assertThat(gauge("keycloak.kafka.events.queue.capacity"), equalTo(2.0));
+        assertThat(count("keycloak.kafka.events.enqueued", "kind", "user"), equalTo(2.0));
+        assertThat(count("keycloak.kafka.events.enqueued", "kind", "admin"), equalTo(1.0));
+        assertThat(count("keycloak.kafka.events.dropped", "kind", "user", "reason", "queue_full"), equalTo(1.0));
+        assertThat(count("keycloak.kafka.events.dropped", "kind", "unknown", "reason", "queue_full"),
+                equalTo(1.0));
+
+        producer.release();
+        awaitUntil(() -> sender.stats().sent() == 3);
+        assertThat(count("keycloak.kafka.events.sent", "kind", "user", "topic", "events"), equalTo(2.0));
+        assertThat(count("keycloak.kafka.events.sent", "kind", "admin", "topic", "admin-events"), equalTo(1.0));
+    }
+
+    @Test
+    void reportsSendFailuresToMetrics() {
+        var sender = start(new ThrowingProducer(), 10, CLOSE_TIMEOUT);
+
+        sender.offer(record("kafka", "v", "admin"));
+        awaitUntil(() -> sender.stats().failedTotal() == 1);
+
+        assertThat(count("keycloak.kafka.events.failed", "kind", "admin", "reason", "KafkaException"),
+                equalTo(1.0));
+    }
+
+    @Test
+    void shutdownDropsAreReportedToMetrics() {
+        var producer = gated(true);
+        var sender = start(producer, 10, Duration.ZERO);
+        sender.offer(record("t", "stuck", "user"));
+        awaitUntil(() -> producer.entered.getCount() == 0);
+        sender.offer(record("t", "queued", "user"));
+
+        sender.close();
+
+        assertThat(count("keycloak.kafka.events.dropped", "kind", "user", "reason", "shutdown"), equalTo(1.0));
     }
 
     @Test
@@ -241,15 +300,17 @@ class KafkaSenderTest {
     void rejectsInvalidSettings() {
         var producer = new MockProducer<>(true, null, new StringSerializer(), new ByteArraySerializer());
 
-        assertThrows(IllegalArgumentException.class, () -> KafkaSender.start(producer, 0, CLOSE_TIMEOUT));
         assertThrows(IllegalArgumentException.class,
-                () -> KafkaSender.start(producer, 10, Duration.ofMillis(-1)));
+                () -> KafkaSender.start(producer, 0, CLOSE_TIMEOUT, EventMetrics.NOOP));
+        assertThrows(IllegalArgumentException.class,
+                () -> KafkaSender.start(producer, 10, Duration.ofMillis(-1), EventMetrics.NOOP));
+        assertThat(registry.getMeters(), empty());
     }
 
     // --- helpers -----------------------------------------------------------------------------------------
 
     private KafkaSender start(MockProducer<String, byte[]> producer, int capacity, Duration closeTimeout) {
-        KafkaSender sender = KafkaSender.start(producer, capacity, closeTimeout);
+        KafkaSender sender = KafkaSender.start(producer, capacity, closeTimeout, metrics);
         senders.add(sender);
         return sender;
     }
@@ -276,6 +337,21 @@ class KafkaSenderTest {
 
     private static ProducerRecord<String, byte[]> record(String topic, String value) {
         return new ProducerRecord<>(topic, "key", value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static ProducerRecord<String, byte[]> record(String topic, String value, String kind) {
+        ProducerRecord<String, byte[]> record = record(topic, value);
+        record.headers().add(EventRecordFactory.HEADER_KIND, kind.getBytes(StandardCharsets.UTF_8));
+        return record;
+    }
+
+    private double count(String name, String... tags) {
+        Counter counter = registry.find(name).tags(tags).counter();
+        return counter == null ? 0 : counter.count();
+    }
+
+    private double gauge(String name) {
+        return registry.get(name).gauge().value();
     }
 
     private static long timeMillis(Runnable action) {

@@ -33,6 +33,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <keycloak.version>26.8.1</keycloak.version>
         <kafka.version>4.4.0</kafka.version>
+        <!-- The micrometer-core Keycloak ships (lib/lib/main); provided at runtime, never bundled. -->
+        <micrometer.version>1.17.1</micrometer.version>
     </properties>
 
     <dependencies>
@@ -59,6 +61,14 @@
             <groupId>org.keycloak</groupId>
             <artifactId>keycloak-core</artifactId>
             <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Metrics: Keycloak's Micrometer global registry, exposed on its /metrics endpoint. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
             <scope>provided</scope>
         </dependency>
 

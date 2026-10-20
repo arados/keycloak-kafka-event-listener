@@ -70,7 +70,8 @@ docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstra
   --formatter-property print.key=true --formatter-property print.headers=true   # prints HEADERS<TAB>KEY<TAB>VALUE
 ```
 
-- Admin console: http://localhost:8080/admin/ (admin/admin)
+- Admin console: http://localhost:8080/admin/ (admin/admin); metrics on http://localhost:9000/metrics
+  (`KC_METRICS_ENABLED=true`; the listener's meters are `keycloak_kafka_events_*`)
 - Demo realm `kafka-demo`: user `testuser` / `password`, public client `kafka-demo-client` (direct grants on),
   events + admin events enabled, listeners `jboss-logging`, `kafka-events`
 - Kafka: `kafka:9092` inside the compose network, `localhost:9094` from the host
@@ -78,7 +79,7 @@ docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstra
   Keycloak starts; other topics (custom templates) are auto-created by the broker
 - Listener config is passed as env `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__<KEY>` (see docker-compose.yml)
 - The user also runs an unrelated `kafka` container on host ports 9092/29092 — don't touch it; this stack
-  only publishes 8080, 9094 (and 8081 with the `ui` profile)
+  only publishes 8080, 9000, 9094 (and 8081 with the `ui` profile)
 
 Use the **`verify-events`** skill to exercise the stack end to end.
 
