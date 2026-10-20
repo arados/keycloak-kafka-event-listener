@@ -10,7 +10,7 @@ import org.keycloak.events.Details;
 
 /**
  * Decides which event {@code details} values are replaced by {@link EnvelopeMapper#REDACTED}
- * (docs/PLAN.md "Envelope v1", RESEARCH §3.3). Keys are compared case-insensitively and exactly (no
+ * (README "Privacy"). Keys are compared case-insensitively and exactly (no
  * substring or prefix matching). A key is redacted when, in order of precedence:
  *
  * <ol>

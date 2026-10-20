@@ -63,7 +63,7 @@
         </dependency>
 
         <!-- Not shipped by Keycloak: bundled into the shaded JAR (see maven-shade-plugin below).
-             Only the lz4 codec comes along (decision D4, docs/PLAN.md): zstd-jni and snappy-java are
+             Only the lz4 codec comes along (see README "Compression"): zstd-jni and snappy-java are
              mostly native libraries for ~20 platforms that they extract to java.io.tmpdir at runtime.
              Excluded here (not just from the shade) so unit tests run without them, exactly like the
              deployed JAR. Users who want compression.type=zstd|snappy add those JARs to providers/. -->
@@ -137,7 +137,7 @@
                                  it does NOT ship kafka-clients or the compression codecs. Bundle only
                                  what Keycloak lacks, and of the codecs only lz4 (D4; zstd-jni and
                                  snappy-java are excluded on the dependency above). Re-check with the
-                                 bump-keycloak skill on every Keycloak upgrade (see docs/RESEARCH.md §5). -->
+                                 bump-keycloak skill on every Keycloak upgrade. -->
                             <artifactSet>
                                 <includes>
                                     <include>org.apache.kafka:kafka-clients</include>
@@ -149,8 +149,7 @@
                                      LZ4Factory/XXHashFactory.fastestInstance() only try JNI when the
                                      library sits on the system classloader (providers don't), else they
                                      use the pure-Java implementation. Dropping them means nothing is
-                                     ever extracted to java.io.tmpdir and no native code is shipped.
-                                     Details: docs/RESEARCH.md §5.1. -->
+                                     ever extracted to java.io.tmpdir and no native code is shipped. -->
                                 <filter>
                                     <artifact>at.yawk.lz4:lz4-java</artifact>
                                     <excludes>

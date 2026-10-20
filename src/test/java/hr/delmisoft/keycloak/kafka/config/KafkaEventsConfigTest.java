@@ -51,7 +51,7 @@ class KafkaEventsConfigTest {
 
     /**
      * Mocks the Quarkus-backed scope: {@code get} takes the option suffix, {@code getPropertyNames} returns
-     * full {@code kc.spi-events-listener--kafka-events--*} keys (docs/RESEARCH.md §6.1).
+     * full {@code kc.spi-events-listener--kafka-events--*} keys, as Keycloak 26.8.1 does.
      */
     private Config.Scope scope() {
         Config.Scope scope = mock(Config.Scope.class);
@@ -598,7 +598,7 @@ class KafkaEventsConfigTest {
     @Test
     void optionNamesAvoidKeycloakBuildTimeSuffixes() {
         // Keycloak treats kc.spi-* keys ending like this as build-time options and refuses
-        // `start --optimized` when they are set at runtime (docs/RESEARCH.md §6.1).
+        // `start --optimized` when they are set at runtime (PropertyMappers.isSpiBuildTimeProperty).
         Set<String> offending = KafkaEventsConst.OPTIONS.stream()
                 .filter(name -> name.endsWith("-enabled") || name.endsWith("-provider")
                         || name.endsWith("-provider-default"))

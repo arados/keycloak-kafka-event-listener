@@ -10,7 +10,7 @@ import java.util.TreeMap;
 
 /**
  * Envelope v1: a CloudEvents 1.0 event in structured JSON mode. This is the public contract consumers
- * read from Kafka (docs/PLAN.md "Envelope v1"); removing or renaming a field requires a new
+ * read from Kafka (README "Envelope"); removing or renaming a field requires a new
  * {@link #SCHEMA_VERSION} and a MAJOR release. Golden fixtures in {@code src/test/resources/envelope/}
  * guard the shape.
  *

@@ -54,7 +54,10 @@ final class ProducerProperties {
     /** Characters of a passthrough suffix after {@code producer-}: Kafka keys are {@code [a-z0-9.]+}. */
     private static final Pattern PASSTHROUGH_SUFFIX_CHARS = Pattern.compile("[a-z0-9-]+");
 
-    /** Keycloak treats SPI keys with these suffixes as build-time options (docs/RESEARCH.md §6.1). */
+    /**
+     * Keycloak treats SPI keys with these suffixes as build-time options ({@code PropertyMappers
+     * .isSpiBuildTimeProperty}): setting one at runtime makes {@code start --optimized} exit.
+     */
     private static final List<String> BUILD_TIME_SUFFIXES = List.of("-enabled", "-provider", "-provider-default");
 
     private static final Map<String, ConfigDef.ConfigKey> KAFKA_KEYS = ProducerConfig.configDef().configKeys();

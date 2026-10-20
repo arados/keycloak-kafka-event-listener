@@ -158,7 +158,7 @@ class KafkaEventListenerProviderFactoryTest {
 
     /**
      * Mocks the Quarkus-backed scope: {@code get} takes the option suffix, {@code getPropertyNames} returns
-     * full {@code kc.spi-events-listener--kafka-events--*} keys (docs/RESEARCH.md §6.1).
+     * full {@code kc.spi-events-listener--kafka-events--*} keys, as Keycloak 26.8.1 does.
      */
     private Config.Scope scope() {
         Config.Scope scope = mock(Config.Scope.class);

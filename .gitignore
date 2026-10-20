@@ -43,6 +43,9 @@ e2e/blob-report/
 .DS_Store
 Thumbs.db
 
+# Maintainer's local working notes (plan, research); never committed
+docs/
+
 # Claude Code (personal overrides; .claude/settings.json is shared and committed)
 .claude/settings.local.json
 .claude/worktrees/

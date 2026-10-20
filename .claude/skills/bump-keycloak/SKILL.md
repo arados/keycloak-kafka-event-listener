@@ -22,13 +22,13 @@ A Keycloak bump is a **MINOR** release per CLAUDE.md versioning rules.
      'ls /opt/keycloak/lib/lib/main | grep -iE "kafka|slf4j|zstd|lz4|snappy|jackson-databind|micrometer-core"'
    ```
    If Keycloak now ships one of the bundled libs (or dropped slf4j/jackson/micrometer), adjust
-   the shade `<artifactSet>` in `pom.xml` and record the finding in docs/RESEARCH.md "Keycloak runtime libraries".
+   the shade `<artifactSet>` in `pom.xml` and record the finding in docs/RESEARCH.md §5 (local notes, git-ignored).
 5. If the plugin uses anything from `org.keycloak.events.outbox` / `model/jpa` internals (planned M3),
    diff those classes between the old and new tag:
    `gh api repos/keycloak/keycloak/compare/OLD...NEW --jq '.files[].filename' | grep -E 'events/outbox|EventBuilder|EventListener'`.
    Also re-check event `details` keys Keycloak sets outside `org.keycloak.events.Details` (the `Details`
    constants are read by reflection; the rest are hard-coded in `DetailRedaction.EXTRA_STANDARD_KEYS`): in a
    checkout of the new tag run `git grep -nE '(^|[^A-Za-z])detail\(' -- '*/src/main/java/*.java'` and compare
-   against RESEARCH §3.3. New literal keys stay redacted until added there.
+   against `DetailRedaction.EXTRA_STANDARD_KEYS`. New literal keys stay redacted until added there.
 6. Verify: `mvn -B clean verify`, then `mvn -B verify -P e2e`.
 7. Commit `Bump Keycloak to X.Y.Z`, open PR to main. Release via the `release` skill if the user wants it shipped.

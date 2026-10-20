@@ -30,7 +30,7 @@ class DetailRedactionTest {
 
     @ParameterizedTest
     @ValueSource(strings = {
-            // Details constants the old substring regex wrongly redacted (RESEARCH §3.3).
+            // Details constants a substring rule (password|secret|token|credential|...) would wrongly redact.
             "token_id", "refresh_token_id", "token_type", "refresh_token_type", "credential_type", "credential_id",
             "selected_credential_id", "credential_user_label", "access_token_expiration_time",
             "age_of_refresh_token", "requested_token_type", "subject_token_client_id", "verifiable_credential_format",
