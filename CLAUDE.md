@@ -22,7 +22,8 @@ Keycloak event listener SPI plugin that publishes Keycloak **user events** and *
 - **Java**: 21
 - **Provider id**: `kafka-events` (Realm settings → Events → Event listeners)
 - **Package**: `hr.delmisoft.keycloak.kafka`
-- **Status**: M0 scaffold done; the listener is a no-op until M1 (see PLAN.md)
+- **Status**: M1 publishing works end to end (async, at-most-once; unit + e2e tested), not released yet; next
+  tasks in PLAN.md
 
 Sibling project `../keycloak-otp` (same author) is the template this repo was created from: same build,
 CI, e2e wiring, versioning rules and test style (otp is multi-module because it ships several features; this
@@ -59,13 +60,16 @@ docker compose --profile ui up -d     # + kafka-ui on http://localhost:8081
 docker compose down -v                # Stop and wipe (fresh realm import next time)
 docker compose logs keycloak          # Keycloak logs (listener warnings show here)
 docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
-  --topic keycloak.events --from-beginning --timeout-ms 10000 --property print.key=true --property print.headers=true
+  --topic keycloak.events --from-beginning --timeout-ms 10000 \
+  --formatter-property print.key=true --formatter-property print.headers=true   # prints HEADERS<TAB>KEY<TAB>VALUE
 ```
 
 - Admin console: http://localhost:8080/admin/ (admin/admin)
 - Demo realm `kafka-demo`: user `testuser` / `password`, public client `kafka-demo-client` (direct grants on),
   events + admin events enabled, listeners `jboss-logging`, `kafka-events`
 - Kafka: `kafka:9092` inside the compose network, `localhost:9094` from the host
+- A one-shot `kafka-init` service creates `keycloak.events` and `keycloak.admin-events` (3 partitions) before
+  Keycloak starts; other topics (custom templates) are auto-created by the broker
 - Listener config is passed as env `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__<KEY>` (see docker-compose.yml)
 - The user also runs an unrelated `kafka` container on host ports 9092/29092 — don't touch it; this stack
   only publishes 8080, 9094 (and 8081 with the `ui` profile)
@@ -79,8 +83,11 @@ These are the invariants every change must keep. Details and rationale in PLAN.m
 - **Never block or fail the request.** `onEvent` only filters, maps to bytes and buffers. Kafka I/O happens
   on our own sender thread. A full queue drops (and counts) instead of waiting. Kafka down/slow/misconfigured
   must not add measurable latency to logins.
-- **Publish only committed events** (async mode): buffer in Keycloak's `EventListenerTransaction`, enlisted via
-  `session.getTransactionManager().enlistAfterCompletion(...)`; rollback discards.
+- **Publish only committed events** (async mode): buffer the records built in `onEvent` in our own
+  after-completion transaction (`PublishAfterCommitTransaction`, not Keycloak's `EventListenerTransaction`, which
+  maps at commit time), enlisted via `session.getTransactionManager().enlistAfterCompletion(...)`; commit only
+  offers them to the sender's queue, rollback discards. Its `commitImpl` must never throw (Keycloak rethrows it
+  out of the request's commit — RESEARCH §3.4).
 - **Do session work inside `onEvent`.** Anything needing `KeycloakSession` / `RealmModel` (issuer URL for
   `source`, etc.) happens in `onEvent` — usually the request thread, but brute-force lockout events arrive on
   Keycloak's `bruteforce` executor; the after-commit callback and sender thread must not touch the session.
@@ -108,8 +115,12 @@ supplier) so no test needs a broker. Envelope tests compare against golden JSON 
 `src/test/resources/`.
 
 **E2E tests** (`e2e/tests/*.spec.js`): Playwright test runner (mostly its `request` API; Chromium installed for
-browser-flow tests). `helpers.js` provides `adminToken`, `passwordLogin`, and `consumeTopic(topic)`, which runs
-the broker's console consumer inside the `kafka` container — no Node Kafka client dependency.
+browser-flow tests). `helpers.js` provides `adminToken`, `passwordLogin`, `demoRealm` (id + issuer),
+`decodeJwt`, `consumeTopic(topic)` / `waitForRecord(topic, predicate)`, which run the broker's console consumer
+inside the `kafka` container — no Node Kafka client dependency — and `stopKafka`/`startKafka`. Match records by
+something unique to the test (session id, new user id, unseen event id): topics keep earlier runs' records.
+`kafka-down.spec.js` stops the broker, so it is its own Playwright project that depends on the main one (runs
+last).
 `mvn verify -P e2e` manages the docker lifecycle exactly like keycloak-otp (antrun: down → up --build → wait →
 npm ci → playwright → down; exit code recorded in `target/e2e-exit-code.txt`).
 

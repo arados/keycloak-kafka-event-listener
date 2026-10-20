@@ -11,13 +11,16 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakTransactionManager;
 
 /**
- * Per-session listener (Keycloak creates one per {@link KeycloakSession}). See CLAUDE.md "Key design rules".
+ * Per-session listener. See CLAUDE.md "Key design rules". User events reach the instance cached by
+ * {@code session.getProvider} (one per {@link KeycloakSession}); admin events reach instances that each
+ * {@code AdminEventBuilder} creates with {@code factory.create(session)}, so one admin request can use several
+ * instances, each with its own after-completion transaction. All of them commit or roll back with the session.
  *
  * <p>{@code onEvent} does all the work that needs the session and nothing that can block: filter, compute
  * {@code source} ({@link EventSource}), map to the envelope, serialize, build the Kafka record, and buffer it in
- * a {@link PublishAfterCommitTransaction}, which is enlisted with the session's transaction manager on the first
- * published event. When the transaction commits, the records go to the sender's bounded queue; on rollback they
- * are discarded. Kafka I/O happens on the sender thread only.
+ * a {@link PublishAfterCommitTransaction}, which this instance enlists with the session's transaction manager on
+ * its first published event. When the transaction commits, the records go to the sender's bounded queue; on
+ * rollback they are discarded. Kafka I/O happens on the sender thread only.
  *
  * <p>Dispatch paths, none of which needs special handling:
  * <ul>

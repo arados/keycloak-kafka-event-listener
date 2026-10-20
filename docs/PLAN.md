@@ -41,9 +41,9 @@ request thread                                   │ sender thread (1, daemon)  
 EventBuilder.success()/error()                   │                                    │
  └─ KafkaEventListenerProvider.onEvent(e)        │                                    │
      ├─ filter (type include/exclude)            │                                    │
-     ├─ map → Envelope → JSON bytes  (needs      │                                    │
-     │   session: realm name lookup — do it NOW) │                                    │
-     └─ EventListenerTransaction.addEvent(...)   │                                    │
+     ├─ source (D2; needs the session — NOW)     │                                    │
+     ├─ map → Envelope → JSON bytes → record     │                                    │
+     └─ PublishAfterCommitTransaction.add(rec)   │                                    │
  ... request transaction commits ...             │                                    │
  └─ afterCompletion commitImpl()                 │                                    │
      └─ queue.offer(record)  (never blocks;      │ take() → producer.send(rec, cb)    │ batches, retries,
@@ -51,14 +51,19 @@ EventBuilder.success()/error()                   │                            
                                                  │  never on the request thread)      │ rate-limited WARN
 ```
 
-- One `KafkaEventListenerProvider` per `KeycloakSession`; on first event it creates one
-  `EventListenerTransaction` and enlists it with `session.getTransactionManager().enlistAfterCompletion(tx)`.
-  Rollback clears buffered events.
+- One `KafkaEventListenerProvider` per `KeycloakSession` for user events (admin events: one per
+  `AdminEventBuilder`, which calls `factory.create(session)` itself — RESEARCH §3.4); on its first published
+  event it creates one `PublishAfterCommitTransaction` and enlists it with
+  `session.getTransactionManager().enlistAfterCompletion(tx)`. Rollback clears buffered records. No active
+  transaction (none started, or already completed) → the record is offered immediately.
+- Decided 2026-10-20: our own `AbstractKeycloakTransaction` holding prebuilt `ProducerRecord`s, not Keycloak's
+  `EventListenerTransaction`, which buffers the events and runs a consumer on them at commit time — mapping
+  there would need the session (for `source`) after commit.
 - Error events arrive in Keycloak's inner `runJobInTransaction` session → a separate provider instance →
-  its own after-completion → published when that inner transaction commits. No special casing needed;
-  cover it with a unit test.
-- Build the envelope bytes in `onEvent` (request thread, session open). Do not touch the session in
-  `commitImpl`.
+  its own after-completion → published when that inner transaction commits (even if the request then fails).
+  Brute-force lockout events: own session on the `bruteforce` executor thread. No special casing needed.
+- Build the envelope bytes in `onEvent` (session open). Do not touch the session in `commitImpl`, and never
+  throw from it: Keycloak rethrows after-completion exceptions out of its commit (RESEARCH §3.4).
 - Factory owns the singletons: config, `KafkaProducer<String, byte[]>`, the bounded queue + sender thread,
   metrics. Created in `postInit`, closed in `close()` (stop accepting → drain queue for ≤ `close-timeout-ms`
   → `producer.close(Duration)`).
@@ -209,7 +214,11 @@ Record the decision + reason here when made.
   request with `hostname-strict=false` — consumers partition/join on `kcrealmid`, never on `source`, and must
   not trust `source` for authorization (README must say so). `<frontendUrl>:<realmName>` was rejected: not a
   valid URI (realm name lands in the port position) and `frontendUrl` is unset by default. No `source-template`
-  in v1. Research: RESEARCH §3.2.
+  in v1. Research: RESEARCH §3.2. Implemented 2026-10-20 (`EventSource`): context realm = event realm → the
+  context's frontend base (Keycloak already applied that realm's `frontendUrl`, so it equals the token `iss`,
+  confirmed in e2e); otherwise the event realm's own valid `frontendUrl`, else the context base — except when
+  that base is another realm's `frontendUrl` override (realm DELETE of a realm that has one), which falls back
+  to the URN.
 - **D3 — config passthrough.** `producer-*` passthrough via `getPropertyNames()` vs. only
   `producer-properties-file`. Verified 2026-10-19 (RESEARCH §6.1): enumeration works for env (`__` form), CLI
   and keycloak.conf; keys come back fully prefixed; dash→dot mapping is lossless for all producer keys.
@@ -249,20 +258,31 @@ Record the decision + reason here when made.
 - [x] `EventFilter` (include/exclude) + unit tests
 - [x] `KafkaSender`: bounded queue + single sender thread + producer callbacks; injectable `Producer` so unit
       tests use Kafka's `MockProducer`; never blocks `offer` (`sender.KafkaSender`; counters in `SenderStats`)
-- [ ] Provider: `EventListenerTransaction` + `enlistAfterCompletion`; rollback drops; error-event inner-session
+- [x] Provider: after-commit transaction + `enlistAfterCompletion`; rollback drops; error-event inner-session
       path covered by a test; compute `source` per D2 (realm issuer from the *event* realm, fallback URN; never
-      throw) and cover user, error, brute-force and admin (incl. realm CREATE/DELETE) paths
-- [ ] Factory lifecycle: disabled-when-unconfigured, fail-fast on invalid config, `postInit` creates sender,
+      throw) and cover user, error, brute-force and admin (incl. realm CREATE/DELETE) paths — done 2026-10-20:
+      `PublishAfterCommitTransaction` (not `EventListenerTransaction`, see "Runtime flow"), `EventSource`;
+      unit tests run Keycloak's real `DefaultKeycloakTransactionManager`. Brute-force needs nothing beyond the
+      same-realm context path (own session, synthetic request; RESEARCH §3.2); not exercised in e2e
+- [x] Factory lifecycle: disabled-when-unconfigured, fail-fast on invalid config, `postInit` creates sender,
       `close()` drains with timeout; classloader-safe producer creation; `compression.type=zstd|snappy` without
       the codec JAR → fail at startup naming the JAR to add to `providers/` (Kafka itself only throws an opaque
-      `NoClassDefFoundError` from the producer constructor — RESEARCH §5.1). Done in `sender`, still to wire:
-      `KafkaProducers.create` (serializer instances, plugin TCCL, missing-codec message) and
-      `KafkaSender.close()` (drain ≤ `close-timeout-ms`, then `producer.close(remaining)`)
-- [ ] E2E: login → record on `keycloak.events` (key, headers, envelope fields); wrong password →
+      `NoClassDefFoundError` from the producer constructor — RESEARCH §5.1). Wired 2026-10-20: `init` builds
+      config, filter, record factory (topic templates) and mapper; `postInit` calls `KafkaProducers.create` +
+      `KafkaSender.start`; `close()` → `KafkaSender.close()`. Checked in the built image: no
+      `bootstrap-servers` → one WARN and Keycloak starts; a bad `topic-events` → Keycloak exits 1 with
+      "Invalid value for spi-events-listener--kafka-events--topic-events: …"
+- [x] E2E: login → record on `keycloak.events` (key, headers, envelope fields); wrong password →
       `LOGIN_ERROR`; admin create user → `keycloak.admin-events`; verify `consumeTopic` output column order
-      (headers/key/value) and fix `helpers.js` if needed
-- [ ] E2E: `docker compose stop kafka` → login still 200 and fast (< 500 ms) → `start kafka`
-- [ ] README: install, config table, envelope example, guarantees, compatibility matrix
+      (headers/key/value) and fix `helpers.js` if needed — `e2e/tests/publishing.spec.js`; the console consumer
+      prints HEADERS, KEY, VALUE (helper code was right, its comment wrong) and `--property` now prints a
+      deprecation line on stdout, so the helper uses `--formatter-property`. Compose gained a one-shot
+      `kafka-init` that creates the two default topics (a first send could otherwise hit `max.block.ms` while
+      the broker auto-creates the topic)
+- [x] E2E: `docker compose stop kafka` → login still 200 and fast (< 500 ms) → `start kafka` —
+      `e2e/tests/kafka-down.spec.js` (own Playwright project, runs last; also checks publishing resumes).
+      Observed 2026-10-20: ~29–31 ms per login with Kafka down, same as up
+- [x] README: install, config table, envelope example, guarantees, compatibility matrix
 - [ ] Resolve D1, D2 (at least provisionally) before tagging `0.1.0` (D4 decided)
 
 ### M2 — Hardening
@@ -270,8 +290,8 @@ Record the decision + reason here when made.
 - [ ] TLS + SASL/SCRAM e2e (compose profile `secure` with a SASL_SSL listener and generated certs)
 - [ ] Micrometer metrics + e2e scrape check (`KC_METRICS_ENABLED=true`)
 - [ ] Rate-limited failure logging (one WARN per N seconds with counts) — partly done: `KafkaSender` logs
-      delivery failures at most once per 60 s with the suppressed count (`FailureLogLimiter`); queue-full
-      drops are only counted, not logged yet
+      delivery failures and the provider logs `onEvent`/after-commit failures (`ListenerFailures`) at most once
+      per 60 s with the suppressed count (`FailureLogLimiter`); queue-full drops are only counted, not logged yet
 - [ ] Topic overrides + filters e2e
 - [ ] E2E for the README "Compression" recipe: zstd-jni in `providers/` + `compression.type=zstd` publishes
 - [ ] Declare options in `getConfigMetadata()` for documentation (26.8.1 doesn't display it for event listeners,
