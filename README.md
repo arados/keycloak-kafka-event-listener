@@ -3,8 +3,8 @@
 Keycloak event listener that publishes **user events** and **admin events** to **Apache Kafka** as
 CloudEvents JSON.
 
-> **Status: pre-release.** Publishing works end to end and is covered by unit and e2e tests;
-> no release has been tagged yet.
+> **Status: 0.1.0, the first release.** Pre-1.0: options and behaviour may still change between minor versions;
+> the envelope is versioned (`kcschemaversion`) and only changes with a new schema version.
 
 ## Features
 
@@ -28,12 +28,15 @@ mvn verify -P e2e   # full build + end-to-end tests
 ```
 
 `docker compose --profile secure up --build -d` adds a second Keycloak (`:8082`) publishing to a broker over
-SASL_SSL with SCRAM-SHA-512 and zstd compression, set up the way [TLS and SASL](#tls-and-sasl) and
-[Compression](#compression) describe (demo certificates and passwords, never for production).
+SASL_SSL with SCRAM-SHA-512, zstd compression and `delivery-mode=outbox`, set up the way
+[TLS and SASL](#tls-and-sasl), [Compression](#compression) and [Delivery](#delivery-guarantees) describe (demo
+certificates and passwords, never for production).
 
 ## Installation
 
-1. Copy `keycloak-kafka-event-listener-<version>.jar` into `/opt/keycloak/providers/` and run `kc.sh build`
+1. Download `keycloak-kafka-event-listener-<version>.jar` from the
+   [GitHub Releases](https://github.com/arados/keycloak-kafka-event-listener/releases), copy it into
+   `/opt/keycloak/providers/` and run `kc.sh build`
    (or build your image with it, as the [Dockerfile](Dockerfile) here does).
 2. Configure at least the broker, e.g. `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS=kafka:9092`,
    and start Keycloak. All options are runtime options: changing them needs a restart, not a new `kc.sh build`.
