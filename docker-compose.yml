@@ -10,6 +10,8 @@
 # Listeners:
 #   kafka:9092      — in-network (Keycloak → Kafka)
 #   localhost:9094  — from the host (debugging, ad-hoc consumers)
+#
+# Keycloak: http://localhost:8080 (HTTP), http://localhost:9000/metrics (management interface, Prometheus)
 # ============================================================================
 
 services:
@@ -64,9 +66,11 @@ services:
       KC_HTTP_PORT: 8080
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
       KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS: kafka:9092
     ports:
       - "8080:8080"
+      - "9000:9000"
     depends_on:
       kafka:
         condition: service_healthy

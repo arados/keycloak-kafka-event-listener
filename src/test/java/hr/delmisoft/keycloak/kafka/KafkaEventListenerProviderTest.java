@@ -25,10 +25,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import hr.delmisoft.keycloak.kafka.envelope.DetailRedaction;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeMapper;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeOptions;
+import hr.delmisoft.keycloak.kafka.metrics.MicrometerEventMetrics;
 import hr.delmisoft.keycloak.kafka.routing.EventFilter;
 import hr.delmisoft.keycloak.kafka.routing.EventRecordFactory;
 import hr.delmisoft.keycloak.kafka.routing.KeyStrategy;
 import hr.delmisoft.keycloak.kafka.routing.TopicRouter;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.enterprise.context.ContextNotActiveException;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -51,7 +54,9 @@ class KafkaEventListenerProviderTest {
 
     private final KeycloakFixture keycloak = new KeycloakFixture().begin();
     private final List<ProducerRecord<String, byte[]>> published = new ArrayList<>();
-    private final ListenerFailures failures = new ListenerFailures();
+    private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    private final MicrometerEventMetrics metrics = new MicrometerEventMetrics(registry);
+    private final ListenerFailures failures = new ListenerFailures(metrics);
 
     private RecordSink sink = published::add;
     private EventFilter filter = new EventFilter(Set.of(), Set.of(), Set.of(), Set.of());
@@ -136,6 +141,8 @@ class KafkaEventListenerProviderTest {
         verify(keycloak.transactions, never()).enlistAfterCompletion(any(KeycloakTransaction.class));
         keycloak.transactions.commit();
         assertThat(published, empty());
+        assertThat(dropped("user", "filtered"), equalTo(1.0));
+        assertThat(dropped("admin", "filtered"), equalTo(1.0));
     }
 
     @Test
@@ -288,6 +295,8 @@ class KafkaEventListenerProviderTest {
         keycloak.transactions.commit();
 
         assertThat(failures.count(), equalTo(2L));
+        assertThat(dropped("user", "error"), equalTo(1.0));
+        assertThat(dropped("admin", "error"), equalTo(1.0));
         assertThat("later events still publish", published, hasSize(1));
     }
 
@@ -303,6 +312,7 @@ class KafkaEventListenerProviderTest {
         assertDoesNotThrow(keycloak.transactions::commit);
 
         assertThat(failures.count(), equalTo(2L));
+        assertThat(dropped("user", "error"), equalTo(2.0));
     }
 
     private KafkaEventListenerProvider provider() {
@@ -316,7 +326,13 @@ class KafkaEventListenerProviderTest {
                 new EventRecordFactory(new TopicRouter("keycloak.events", "keycloak.admin-events", Map.of()),
                         new KeyStrategy()),
                 record -> sink.offer(record),
-                failures);
+                failures,
+                metrics);
+    }
+
+    private double dropped(String kind, String reason) {
+        Counter counter = registry.find("keycloak.kafka.events.dropped").tags("kind", kind, "reason", reason).counter();
+        return counter == null ? 0 : counter.count();
     }
 
     private static JsonNode json(ProducerRecord<String, byte[]> record) throws IOException {

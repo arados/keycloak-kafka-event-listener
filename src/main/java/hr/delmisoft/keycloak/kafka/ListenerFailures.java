@@ -1,5 +1,6 @@
 package hr.delmisoft.keycloak.kafka;
 
+import hr.delmisoft.keycloak.kafka.metrics.EventMetrics;
 import hr.delmisoft.keycloak.kafka.sender.FailureLogLimiter;
 import java.time.Duration;
 import java.util.concurrent.atomic.LongAdder;
@@ -10,7 +11,8 @@ import org.jboss.logging.Logger;
  * Counts events the listener could not hand to the sender because something failed while preparing them in
  * {@code onEvent} or handing them over after commit, and logs those failures at most once per
  * {@link #LOG_INTERVAL} with the number suppressed in between. Never logs event contents: only the event
- * kind and type and the exception class and message. One instance per factory; thread-safe.
+ * kind and type and the exception class and message. Each failure is also reported as a drop with reason
+ * {@value EventMetrics#DROP_ERROR}. One instance per factory; thread-safe.
  */
 final class ListenerFailures {
 
@@ -20,23 +22,31 @@ final class ListenerFailures {
 
     private final LongAdder count = new LongAdder();
     private final FailureLogLimiter limiter;
+    private final EventMetrics metrics;
 
     ListenerFailures() {
-        this(System::nanoTime);
+        this(EventMetrics.NOOP);
     }
 
-    ListenerFailures(LongSupplier nanoClock) {
+    ListenerFailures(EventMetrics metrics) {
+        this(metrics, System::nanoTime);
+    }
+
+    ListenerFailures(EventMetrics metrics, LongSupplier nanoClock) {
+        this.metrics = metrics;
         this.limiter = new FailureLogLimiter(LOG_INTERVAL, nanoClock);
     }
 
     /**
      * Records one failure.
      *
+     * @param kind  {@code user} or {@code admin} (metrics tag); {@code null} if unknown
      * @param what  what was being done, without event data, e.g. {@code "preparing user event LOGIN"}
      * @param error the failure
      */
-    void record(String what, Throwable error) {
+    void record(String kind, String what, Throwable error) {
         count.increment();
+        metrics.dropped(kind, EventMetrics.DROP_ERROR);
         long suppressed = limiter.tryAcquire();
         if (suppressed == FailureLogLimiter.SUPPRESSED) {
             return;

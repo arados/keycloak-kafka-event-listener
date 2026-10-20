@@ -4,6 +4,7 @@ import static hr.delmisoft.keycloak.kafka.KeycloakFixture.REALM_ID;
 import static hr.delmisoft.keycloak.kafka.KeycloakFixture.USER_ID;
 import static hr.delmisoft.keycloak.kafka.KeycloakFixture.userEvent;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
@@ -20,7 +21,9 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import hr.delmisoft.keycloak.kafka.config.KafkaEventsConfigException;
+import hr.delmisoft.keycloak.kafka.metrics.MicrometerEventMetrics;
 import hr.delmisoft.keycloak.kafka.sender.ProducerCreationException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -38,6 +41,7 @@ import org.keycloak.events.EventType;
 import org.keycloak.events.admin.AdminEvent;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.provider.ProviderConfigProperty;
 
 class KafkaEventListenerProviderFactoryTest {
 
@@ -45,10 +49,11 @@ class KafkaEventListenerProviderFactoryTest {
     private final MockProducer<String, byte[]> producer =
             new MockProducer<>(true, null, new StringSerializer(), new ByteArraySerializer());
     private final List<Map<String, String>> producerProperties = new ArrayList<>();
+    private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     private final KafkaEventListenerProviderFactory factory = new KafkaEventListenerProviderFactory(properties -> {
         producerProperties.add(properties);
         return producer;
-    });
+    }, () -> new MicrometerEventMetrics(registry));
 
     @AfterEach
     void closeFactory() {
@@ -103,7 +108,7 @@ class KafkaEventListenerProviderFactoryTest {
         options.put("bootstrap-servers", "kafka:9092");
         var failing = new KafkaEventListenerProviderFactory(properties -> {
             throw new ProducerCreationException("Cannot create the Kafka producer", new IllegalStateException());
-        });
+        }, () -> new MicrometerEventMetrics(registry));
         failing.init(scope());
 
         assertThrows(ProducerCreationException.class, () -> failing.postInit(mock(KeycloakSessionFactory.class)));
@@ -132,6 +137,30 @@ class KafkaEventListenerProviderFactoryTest {
         assertThat(producer.history().get(0).topic(), equalTo("kc.kafka-demo.events"));
         assertThat(producer.history().get(0).key(), equalTo(REALM_ID + ":" + USER_ID));
         assertThat(producer.closed(), is(true));
+    }
+
+    @Test
+    void metricsAreRegisteredWhileRunningAndRemovedOnClose() {
+        options.put("bootstrap-servers", "kafka:9092");
+        factory.init(scope());
+        factory.postInit(mock(KeycloakSessionFactory.class));
+        KeycloakFixture keycloak = new KeycloakFixture().begin();
+        factory.create(keycloak.session).onEvent(userEvent(EventType.LOGIN));
+        keycloak.transactions.commit();
+
+        assertThat(registry.get("keycloak.kafka.events.enqueued").tag("kind", "user").counter().count(),
+                equalTo(1.0));
+        assertThat(registry.get("keycloak.kafka.events.queue.capacity").gauge().value(), equalTo(10_000.0));
+
+        factory.close();
+        assertThat(registry.getMeters(), empty());
+    }
+
+    @Test
+    void configMetadataDeclaresEveryFixedOption() {
+        List<String> declared = factory.getConfigMetadata().stream().map(ProviderConfigProperty::getName).toList();
+
+        assertThat(declared, containsInAnyOrder(KafkaEventsConst.OPTIONS.toArray()));
     }
 
     @Test

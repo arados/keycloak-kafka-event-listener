@@ -1,5 +1,7 @@
 package hr.delmisoft.keycloak.kafka.sender;
 
+import hr.delmisoft.keycloak.kafka.metrics.EventMetrics;
+import hr.delmisoft.keycloak.kafka.routing.EventRecordFactory;
 import java.time.Duration;
 import java.util.EnumMap;
 import java.util.Map;
@@ -23,8 +25,10 @@ import org.jboss.logging.Logger;
  * after-commit callback on request threads) only appends to a bounded queue: a full queue or a closed sender
  * drops the record and counts it. A single daemon thread ({@value #THREAD_NAME}) takes records and calls
  * {@link Producer#send}, which may block up to {@code max.block.ms} waiting for metadata — on that thread
- * only. Delivery outcomes are counted from the producer callback; failures are logged at most once per
- * {@link #FAILURE_LOG_INTERVAL} with a count of the suppressed ones. Payloads are never logged.
+ * only. Delivery outcomes are counted from the producer callback; failures, and drops because the queue is
+ * full, are logged at most once per {@link #FAILURE_LOG_INTERVAL} each, with a count of the suppressed ones.
+ * Payloads are never logged. Every outcome is also reported to {@link EventMetrics}, tagged with the record's
+ * {@code kc-kind}.
  *
  * <p>{@link #close()} stops accepting, lets the sender thread drain the queue until {@code close-timeout-ms}
  * runs out, then closes the producer with whatever is left of that budget. Records still queued afterwards
@@ -57,6 +61,8 @@ public final class KafkaSender implements AutoCloseable {
     private final Duration closeTimeout;
     private final LongSupplier nanoClock;
     private final FailureLogLimiter failureLog;
+    private final FailureLogLimiter queueFullLog;
+    private final EventMetrics metrics;
     private final Thread thread;
     private final AtomicReference<Closing> closing = new AtomicReference<>();
 
@@ -66,7 +72,7 @@ public final class KafkaSender implements AutoCloseable {
     private final Map<DropReason, LongAdder> dropped = new EnumMap<>(DropReason.class);
 
     private KafkaSender(Producer<String, byte[]> producer, int queueCapacity, Duration closeTimeout,
-            Duration failureLogInterval, LongSupplier nanoClock) {
+            EventMetrics metrics, Duration failureLogInterval, LongSupplier nanoClock) {
         if (queueCapacity <= 0) {
             throw new IllegalArgumentException("queueCapacity must be positive");
         }
@@ -79,7 +85,9 @@ public final class KafkaSender implements AutoCloseable {
         this.nanoClock = nanoClock;
         // Linked, not array-backed: memory grows with the backlog instead of being preallocated for the bound.
         this.queue = new LinkedBlockingQueue<>(queueCapacity);
+        this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.failureLog = new FailureLogLimiter(failureLogInterval, nanoClock);
+        this.queueFullLog = new FailureLogLimiter(failureLogInterval, nanoClock);
         for (DropReason reason : DropReason.values()) {
             // Fully populated here and never modified afterwards, so concurrent reads of the map are safe.
             dropped.put(reason, new LongAdder());
@@ -98,14 +106,18 @@ public final class KafkaSender implements AutoCloseable {
      * @param producer      the producer; the sender owns it from now on and closes it in {@link #close()}
      * @param queueCapacity maximum number of records waiting to be sent
      * @param closeTimeout  total budget of {@link #close()} for draining the queue and closing the producer
+     * @param metrics       where outcomes are reported; the queue gauges are registered here
      */
-    public static KafkaSender start(Producer<String, byte[]> producer, int queueCapacity, Duration closeTimeout) {
-        return start(producer, queueCapacity, closeTimeout, FAILURE_LOG_INTERVAL, System::nanoTime);
+    public static KafkaSender start(Producer<String, byte[]> producer, int queueCapacity, Duration closeTimeout,
+            EventMetrics metrics) {
+        return start(producer, queueCapacity, closeTimeout, metrics, FAILURE_LOG_INTERVAL, System::nanoTime);
     }
 
     static KafkaSender start(Producer<String, byte[]> producer, int queueCapacity, Duration closeTimeout,
-            Duration failureLogInterval, LongSupplier nanoClock) {
-        KafkaSender sender = new KafkaSender(producer, queueCapacity, closeTimeout, failureLogInterval, nanoClock);
+            EventMetrics metrics, Duration failureLogInterval, LongSupplier nanoClock) {
+        KafkaSender sender = new KafkaSender(producer, queueCapacity, closeTimeout, metrics, failureLogInterval,
+                nanoClock);
+        metrics.queue(sender.queue::size, queueCapacity);
         sender.thread.start();
         return sender;
     }
@@ -121,21 +133,23 @@ public final class KafkaSender implements AutoCloseable {
             return false;
         }
         if (closing.get() != null) {
-            drop(DropReason.SHUTDOWN);
+            drop(DropReason.SHUTDOWN, record);
             return false;
         }
         if (!queue.offer(record)) {
-            drop(DropReason.QUEUE_FULL);
+            drop(DropReason.QUEUE_FULL, record);
+            logQueueFull();
             return false;
         }
         // close() may have started between the check above and the insert, after its final sweep of the
         // queue. Take the record back so it is not stranded uncounted; if it is already gone, the sender
         // thread or close() took it and accounts for it.
         if (closing.get() != null && queue.remove(record)) {
-            drop(DropReason.SHUTDOWN);
+            drop(DropReason.SHUTDOWN, record);
             return false;
         }
         enqueued.increment();
+        metrics.enqueued(EventRecordFactory.kindOf(record));
         return true;
     }
 
@@ -228,27 +242,30 @@ public final class KafkaSender implements AutoCloseable {
 
     private void send(ProducerRecord<String, byte[]> record) {
         String topic = record.topic();
+        String kind = EventRecordFactory.kindOf(record);
         try {
-            producer.send(record, (metadata, exception) -> onCompletion(topic, exception));
+            producer.send(record, (metadata, exception) -> onCompletion(kind, topic, exception));
         } catch (RuntimeException | LinkageError e) {
             // KafkaException (incl. TimeoutException, SerializationException, InterruptException), producer
             // closed, a broken interceptor or partitioner... Count it and keep going: this thread must not die.
-            onFailure(topic, e);
+            onFailure(kind, topic, e);
         }
     }
 
     /** Producer callback; runs on Kafka's I/O thread, so it only counts and (rarely) logs. */
-    private void onCompletion(String topic, Exception exception) {
+    private void onCompletion(String kind, String topic, Exception exception) {
         if (exception == null) {
             sent.increment();
+            metrics.sent(kind, topic);
         } else {
-            onFailure(topic, exception);
+            onFailure(kind, topic, exception);
         }
     }
 
-    private void onFailure(String topic, Throwable error) {
+    private void onFailure(String kind, String topic, Throwable error) {
         String reason = reason(error);
         failed.computeIfAbsent(reason, r -> new LongAdder()).increment();
+        metrics.failed(kind, reason);
         long suppressed = failureLog.tryAcquire();
         if (suppressed == FailureLogLimiter.SUPPRESSED) {
             return;
@@ -294,14 +311,27 @@ public final class KafkaSender implements AutoCloseable {
 
     private int dropQueued() {
         int count = 0;
-        while (queue.poll() != null) {
+        for (ProducerRecord<String, byte[]> record = queue.poll(); record != null; record = queue.poll()) {
+            drop(DropReason.SHUTDOWN, record);
             count++;
         }
-        dropped.get(DropReason.SHUTDOWN).add(count);
         return count;
     }
 
-    private void drop(DropReason reason) {
+    private void drop(DropReason reason, ProducerRecord<String, byte[]> record) {
         dropped.get(reason).increment();
+        metrics.dropped(EventRecordFactory.kindOf(record), reason.tag());
+    }
+
+    /** Runs on request threads, but only while the queue is full, and logs at most once per interval. */
+    private void logQueueFull() {
+        long suppressed = queueFullLog.tryAcquire();
+        if (suppressed == FailureLogLimiter.SUPPRESSED) {
+            return;
+        }
+        String summary = suppressed > 0 ? " (" + suppressed + " more dropped since the last report)" : "";
+        LOG.warnf("Kafka event queue is full (queue-capacity %d): dropping Keycloak events%s. Kafka is down or"
+                + " slower than the event rate; the Keycloak requests are not affected. Logged at most once every"
+                + " %d s", queueCapacity, summary, FAILURE_LOG_INTERVAL.toSeconds());
     }
 }

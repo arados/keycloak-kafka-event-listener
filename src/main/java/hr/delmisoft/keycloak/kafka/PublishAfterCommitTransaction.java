@@ -1,5 +1,6 @@
 package hr.delmisoft.keycloak.kafka;
 
+import hr.delmisoft.keycloak.kafka.routing.EventRecordFactory;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -44,7 +45,8 @@ final class PublishAfterCommitTransaction extends AbstractKeycloakTransaction {
                 try {
                     sink.offer(record);
                 } catch (RuntimeException | LinkageError e) {
-                    failures.record("handing a committed event to the Kafka sender", e);
+                    failures.record(EventRecordFactory.kindOf(record), "handing a committed event to the Kafka sender",
+                            e);
                 }
             }
         } finally {

@@ -3,6 +3,7 @@ package hr.delmisoft.keycloak.kafka;
 import hr.delmisoft.keycloak.kafka.envelope.Envelope;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeContext;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeMapper;
+import hr.delmisoft.keycloak.kafka.metrics.EventMetrics;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.keycloak.events.Event;
 import org.keycloak.events.EventListenerProvider;
@@ -39,6 +40,9 @@ import org.keycloak.models.KeycloakTransactionManager;
  */
 public final class KafkaEventListenerProvider implements EventListenerProvider {
 
+    private static final String USER = Envelope.Kind.USER.value();
+    private static final String ADMIN = Envelope.Kind.ADMIN.value();
+
     private final KeycloakSession session;
     private final ListenerPipeline pipeline;
 
@@ -54,13 +58,14 @@ public final class KafkaEventListenerProvider implements EventListenerProvider {
     public void onEvent(Event event) {
         try {
             if (!pipeline.filter().accepts(event)) {
+                pipeline.metrics().dropped(USER, EventMetrics.DROP_FILTERED);
                 return;
             }
             EventSource.Resolved realm = EventSource.resolve(session, event.getRealmId(), event.getRealmName());
             Envelope envelope = pipeline.mapper().map(event, new EnvelopeContext(realm.source(), realm.realmName()));
             publishAfterCommit(envelope);
         } catch (RuntimeException | LinkageError e) {
-            pipeline.failures().record("preparing user event " + (event == null ? null : event.getType()), e);
+            pipeline.failures().record(USER, "preparing user event " + (event == null ? null : event.getType()), e);
         }
     }
 
@@ -68,6 +73,7 @@ public final class KafkaEventListenerProvider implements EventListenerProvider {
     public void onEvent(AdminEvent event, boolean includeRepresentation) {
         try {
             if (!pipeline.filter().accepts(event)) {
+                pipeline.metrics().dropped(ADMIN, EventMetrics.DROP_FILTERED);
                 return;
             }
             EventSource.Resolved realm = EventSource.resolve(session, event.getRealmId(), event.getRealmName());
@@ -75,7 +81,7 @@ public final class KafkaEventListenerProvider implements EventListenerProvider {
                     new EnvelopeContext(realm.source(), realm.realmName()));
             publishAfterCommit(envelope);
         } catch (RuntimeException | LinkageError e) {
-            pipeline.failures().record("preparing admin event "
+            pipeline.failures().record(ADMIN, "preparing admin event "
                     + (event == null ? null : event.getResourceTypeAsString() + "." + event.getOperationType()), e);
         }
     }
