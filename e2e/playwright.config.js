@@ -13,6 +13,17 @@ module.exports = defineConfig({
     trace: 'on-first-retry',
   },
   projects: [
-    { name: 'chromium', use: { browserName: 'chromium' } },
+    {
+      name: 'chromium',
+      use: { browserName: 'chromium' },
+      testIgnore: /kafka-down\.spec\.js/,
+    },
+    {
+      // Stops and restarts the broker: runs only after every other test has finished.
+      name: 'kafka-down',
+      use: { browserName: 'chromium' },
+      testMatch: /kafka-down\.spec\.js/,
+      dependencies: ['chromium'],
+    },
   ],
 });

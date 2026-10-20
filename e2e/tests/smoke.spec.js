@@ -1,9 +1,8 @@
 const { test, expect } = require('@playwright/test');
 const { KEYCLOAK_URL, REALM, adminToken, passwordLogin } = require('./helpers');
 
-// Scaffold-level checks: the shaded JAR loads into Keycloak and the demo realm uses it.
-// Publishing assertions (records on keycloak.events / keycloak.admin-events) are added
-// in milestone M1 — see docs/PLAN.md.
+// Wiring checks: the shaded JAR loads into Keycloak and the demo realm uses it.
+// What gets published is checked in publishing.spec.js; Kafka outages in kafka-down.spec.js.
 
 test('kafka-events listener is registered in Keycloak', async ({ request }) => {
   const token = await adminToken(request);
