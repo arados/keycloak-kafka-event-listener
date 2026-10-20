@@ -7,10 +7,19 @@ const CLIENT_ID = 'kafka-demo-client';
 const TOPIC_EVENTS = 'keycloak.events';
 const TOPIC_ADMIN_EVENTS = 'keycloak.admin-events';
 const COMPOSE_DIR = path.resolve(__dirname, '..', '..');
+const METRICS_URL = 'http://localhost:9000/metrics';
+
+/**
+ * The two Keycloak + Kafka pairs of docker-compose.yml. Every helper takes an optional `stack` (default MAIN).
+ * SECURE (compose profile `secure`) publishes over SASL_SSL/SCRAM with zstd; its broker's in-network PLAINTEXT
+ * listener is only used by the console tools here.
+ */
+const MAIN = { keycloakUrl: KEYCLOAK_URL, kafkaService: 'kafka' };
+const SECURE = { keycloakUrl: 'http://localhost:8082', kafkaService: 'kafka-secure' };
 
 /** Admin access token from the master realm (admin/admin from docker-compose.yml). */
-async function adminToken(request) {
-  const res = await request.post(`${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token`, {
+async function adminToken(request, stack = MAIN) {
+  const res = await request.post(`${stack.keycloakUrl}/realms/master/protocol/openid-connect/token`, {
     form: { grant_type: 'password', client_id: 'admin-cli', username: 'admin', password: 'admin' },
   });
   if (!res.ok()) throw new Error(`admin token failed: ${res.status()} ${await res.text()}`);
@@ -18,20 +27,20 @@ async function adminToken(request) {
 }
 
 /** Password grant for testuser; produces a LOGIN (or LOGIN_ERROR) event. */
-async function passwordLogin(request, username = 'testuser', password = 'password') {
-  return request.post(`${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token`, {
+async function passwordLogin(request, username = 'testuser', password = 'password', stack = MAIN) {
+  return request.post(`${stack.keycloakUrl}/realms/${REALM}/protocol/openid-connect/token`, {
     form: { grant_type: 'password', client_id: CLIENT_ID, username, password },
   });
 }
 
 /** The demo realm's id and issuer (= the `iss` of its tokens and the envelope `source`). */
-async function demoRealm(request) {
-  const token = await adminToken(request);
-  const res = await request.get(`${KEYCLOAK_URL}/admin/realms/${REALM}`, {
+async function demoRealm(request, stack = MAIN) {
+  const token = await adminToken(request, stack);
+  const res = await request.get(`${stack.keycloakUrl}/admin/realms/${REALM}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok()) throw new Error(`realm lookup failed: ${res.status()} ${await res.text()}`);
-  const discovery = await request.get(`${KEYCLOAK_URL}/realms/${REALM}/.well-known/openid-configuration`);
+  const discovery = await request.get(`${stack.keycloakUrl}/realms/${REALM}/.well-known/openid-configuration`);
   return { id: (await res.json()).id, issuer: (await discovery.json()).issuer };
 }
 
@@ -45,8 +54,8 @@ function docker(args, options = {}) {
 }
 
 /**
- * Reads all records of a topic with the broker's own console consumer, running inside this stack's
- * `kafka` service container (no Node Kafka client needed). Starts from the beginning and stops after
+ * Reads all records of a topic with the broker's own console consumer, running inside the stack's
+ * Kafka service container (no Node Kafka client needed). Starts from the beginning and stops after
  * `timeoutMs` without new records.
  *
  * The console consumer prints HEADERS<TAB>KEY<TAB>VALUE per record (verified with apache/kafka 4.3.1),
@@ -54,9 +63,9 @@ function docker(args, options = {}) {
  * `{ headers: {name: value}, key, value, raw }`, where `value` is the parsed JSON envelope (the raw string
  * when it is not JSON) and `raw` the unparsed value.
  */
-function consumeTopic(topic, { timeoutMs = 3000 } = {}) {
+function consumeTopic(topic, { timeoutMs = 3000, stack = MAIN } = {}) {
   const args = [
-    'compose', 'exec', '-T', 'kafka',
+    'compose', 'exec', '-T', stack.kafkaService,
     '/opt/kafka/bin/kafka-console-consumer.sh',
     '--bootstrap-server', 'localhost:9092',
     '--topic', topic,
@@ -99,11 +108,11 @@ function parseHeaders(rawHeaders) {
 }
 
 /** Polls the topic until a record matches `predicate`; returns it or throws after `timeoutMs`. */
-async function waitForRecord(topic, predicate, { timeoutMs = 30000 } = {}) {
+async function waitForRecord(topic, predicate, { timeoutMs = 30000, stack = MAIN } = {}) {
   const deadline = Date.now() + timeoutMs;
   let seen = 0;
   while (Date.now() < deadline) {
-    const records = consumeTopic(topic);
+    const records = consumeTopic(topic, { stack });
     seen = records.length;
     const match = records.find((record) => predicate(record));
     if (match) return match;
@@ -111,24 +120,52 @@ async function waitForRecord(topic, predicate, { timeoutMs = 30000 } = {}) {
   throw new Error(`no matching record on ${topic} within ${timeoutMs} ms (${seen} records on the topic)`);
 }
 
-/** `docker compose stop kafka`: only this stack's broker service, never other containers. */
-function stopKafka() {
-  docker(['compose', 'stop', 'kafka']);
+/** `docker compose stop <kafka service>`: only this compose project's broker, never other containers. */
+function stopKafka(stack = MAIN) {
+  docker(['compose', 'stop', stack.kafkaService]);
 }
 
-/** `docker compose start kafka`, then waits for its health check. */
-async function startKafka({ timeoutMs = 90000 } = {}) {
-  docker(['compose', 'start', 'kafka']);
+/** `docker compose start <kafka service>`, then waits for its health check. */
+async function startKafka({ timeoutMs = 90000, stack = MAIN } = {}) {
+  docker(['compose', 'start', stack.kafkaService]);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const line = docker(['compose', 'ps', '--format', 'json', 'kafka']).split('\n').find((l) => l.trim());
+    const line = docker(['compose', 'ps', '--format', 'json', stack.kafkaService]).split('\n').find((l) => l.trim());
     if (line && JSON.parse(line).Health === 'healthy') return;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new Error(`kafka did not become healthy within ${timeoutMs} ms`);
 }
 
+/**
+ * Sum of the Prometheus samples of `name` whose labels include every entry of `labels`, scraped from the main
+ * Keycloak's management interface (metrics are enabled in docker-compose.yml).
+ */
+async function metricValue(request, name, labels = {}) {
+  const res = await request.get(METRICS_URL);
+  if (!res.ok()) throw new Error(`metrics scrape failed: ${res.status()}`);
+  let total = 0;
+  for (const line of (await res.text()).split('\n')) {
+    const match = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})? (\S+)$/);
+    if (!match || match[1] !== name) continue;
+    const present = Object.fromEntries([...(match[2] || '').matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+    if (Object.entries(labels).every(([k, v]) => present[k] === v)) total += Number(match[3]);
+  }
+  return total;
+}
+
+/**
+ * Compression codecs of the record batches of a topic, read from the broker's log segments with
+ * kafka-dump-log.sh (e.g. ['zstd']).
+ */
+function topicCodecs(topic, stack = MAIN) {
+  const script = `for f in /tmp/kafka-logs/${topic}-*/*.log; do /opt/kafka/bin/kafka-dump-log.sh --files "$f"; done`;
+  const out = docker(['compose', 'exec', '-T', stack.kafkaService, 'sh', '-c', script]);
+  return [...new Set([...out.matchAll(/compresscodec: (\w+)/g)].map((m) => m[1]))];
+}
+
 module.exports = {
-  KEYCLOAK_URL, REALM, CLIENT_ID, TOPIC_EVENTS, TOPIC_ADMIN_EVENTS,
-  adminToken, passwordLogin, demoRealm, decodeJwt, consumeTopic, waitForRecord, stopKafka, startKafka,
+  KEYCLOAK_URL, REALM, CLIENT_ID, TOPIC_EVENTS, TOPIC_ADMIN_EVENTS, METRICS_URL, MAIN, SECURE,
+  adminToken, passwordLogin, demoRealm, decodeJwt, consumeTopic, waitForRecord, stopKafka, startKafka, topicCodecs,
+  metricValue,
 };

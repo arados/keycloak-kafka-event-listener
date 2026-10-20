@@ -68,7 +68,7 @@ jobs:
 
       - name: Dump Keycloak and Kafka logs on failure
         if: failure()
-        run: docker compose logs keycloak kafka || true
+        run: docker compose --profile secure logs keycloak kafka keycloak-secure kafka-secure || true
 
   spotbugs:
     # Static analysis: fast, deterministic, runs on every push so security regressions

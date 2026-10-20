@@ -229,7 +229,8 @@
 
     <profiles>
         <!-- Playwright end-to-end tests in e2e/. `mvn verify -P e2e` manages the docker compose
-             lifecycle: compose down, compose up (rebuilding the image), wait, npm ci, playwright, compose down. -->
+             lifecycle (always with the `secure` profile): compose down, compose up (rebuilding the images),
+             wait, npm ci, playwright, compose down. -->
         <profile>
             <id>e2e</id>
             <properties>
@@ -237,6 +238,8 @@
                 <e2e.keycloak.url>http://localhost:8080</e2e.keycloak.url>
                 <e2e.realm>kafka-demo</e2e.realm>
                 <e2e.readiness.url>${e2e.keycloak.url}/realms/${e2e.realm}/.well-known/openid-configuration</e2e.readiness.url>
+                <!-- keycloak-secure, compose profile `secure` (SASL_SSL/SCRAM broker, zstd) -->
+                <e2e.readiness.secureUrl>http://localhost:8082/realms/${e2e.realm}/.well-known/openid-configuration</e2e.readiness.secureUrl>
                 <e2e.readiness.maxAttempts>90</e2e.readiness.maxAttempts>
                 <e2e.readiness.sleepSeconds>2</e2e.readiness.sleepSeconds>
                 <e2e.exitCodeFile>${project.build.directory}/e2e-exit-code.txt</e2e.exitCodeFile>
@@ -258,6 +261,8 @@
                                         <echo message="==&gt; Tearing down any existing stack" />
                                         <exec executable="docker" dir="${project.basedir}" failonerror="false">
                                             <arg value="compose" />
+                                            <arg value="--profile" />
+                                            <arg value="secure" />
                                             <arg value="down" />
                                             <arg value="-v" />
                                         </exec>
@@ -265,6 +270,8 @@
                                         <echo message="==&gt; Building and starting docker compose stack" />
                                         <exec executable="docker" dir="${project.basedir}" failonerror="true">
                                             <arg value="compose" />
+                                            <arg value="--profile" />
+                                            <arg value="secure" />
                                             <arg value="up" />
                                             <arg value="--build" />
                                             <arg value="-d" />
@@ -274,6 +281,12 @@
                                         <exec executable="sh" failonerror="true">
                                             <arg value="-c" />
                                             <arg value="for i in $(seq 1 ${e2e.readiness.maxAttempts}); do curl -sf ${e2e.readiness.url} &gt;/dev/null 2&gt;&amp;1 &amp;&amp; echo &quot;ready after $((i*${e2e.readiness.sleepSeconds}))s&quot; &amp;&amp; exit 0; sleep ${e2e.readiness.sleepSeconds}; done; echo &quot;Keycloak did not become ready in time&quot;; exit 1" />
+                                        </exec>
+
+                                        <echo message="==&gt; Waiting for keycloak-secure readiness at ${e2e.readiness.secureUrl}" />
+                                        <exec executable="sh" failonerror="true">
+                                            <arg value="-c" />
+                                            <arg value="for i in $(seq 1 ${e2e.readiness.maxAttempts}); do curl -sf ${e2e.readiness.secureUrl} &gt;/dev/null 2&gt;&amp;1 &amp;&amp; echo &quot;ready after $((i*${e2e.readiness.sleepSeconds}))s&quot; &amp;&amp; exit 0; sleep ${e2e.readiness.sleepSeconds}; done; echo &quot;keycloak-secure did not become ready in time&quot;; exit 1" />
                                         </exec>
                                     </target>
                                 </configuration>
@@ -321,6 +334,8 @@
                                         <echo message="==&gt; Tearing down docker compose stack" />
                                         <exec executable="docker" dir="${project.basedir}" failonerror="false">
                                             <arg value="compose" />
+                                            <arg value="--profile" />
+                                            <arg value="secure" />
                                             <arg value="down" />
                                             <arg value="-v" />
                                         </exec>

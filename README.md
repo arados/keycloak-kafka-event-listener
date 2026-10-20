@@ -23,9 +23,14 @@ Planned: an optional at-least-once mode using Keycloak's durable outbox.
 ```bash
 docker compose up --build -d
 # Keycloak: http://localhost:8080/admin (admin/admin), realm "kafka-demo", user testuser/password
+# Metrics:  http://localhost:9000/metrics
 # Kafka:    localhost:9094 from the host
 mvn verify -P e2e   # full build + end-to-end tests
 ```
+
+`docker compose --profile secure up --build -d` adds a second Keycloak (`:8082`) publishing to a broker over
+SASL_SSL with SCRAM-SHA-512 and zstd compression, set up the way [TLS and SASL](#tls-and-sasl) and
+[Compression](#compression) describe (demo certificates and passwords, never for production).
 
 ## Installation
 
@@ -284,7 +289,9 @@ Delivery is **at-most-once**:
 - **Never blocks logins.** After commit, events go to a bounded in-memory queue (`queue-capacity`). A single
   background thread hands them to the Kafka producer, which batches, compresses, retries, and gives up after
   `delivery.timeout.ms`. Request threads never wait for Kafka: with Kafka down, logins take as long as with
-  Kafka up (the e2e test checks < 500 ms; locally ~30 ms either way).
+  Kafka up (the e2e test checks < 500 ms; locally ~30 ms either way). Under load, ~1,000 token requests/s on a
+  laptop (`e2e/load/load.js`) had the same latency with the broker stopped (p50 2.6 ms, p95 8.1 ms) as with it
+  running (p50 2.7 ms, p95 7.8 ms); the queue stopped at `queue-capacity` and the rest were dropped and counted.
 - **Kafka down or slow → queue, then drop.** While the broker is unreachable, the sender waits up to
   `max.block.ms` per event for metadata; the queue absorbs the backlog and, once full, further events are
   dropped. Records Kafka doesn't acknowledge within `delivery.timeout.ms` fail. Both are counted

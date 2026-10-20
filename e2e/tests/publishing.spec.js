@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const {
   KEYCLOAK_URL, REALM, CLIENT_ID, TOPIC_EVENTS, TOPIC_ADMIN_EVENTS,
-  adminToken, passwordLogin, demoRealm, decodeJwt, consumeTopic, waitForRecord,
+  adminToken, passwordLogin, demoRealm, decodeJwt, consumeTopic, waitForRecord, topicCodecs,
 } = require('./helpers');
 
 // Records are matched by something unique to this run (session id, new user id, unseen event id), since
@@ -60,6 +60,8 @@ test('password login publishes LOGIN with key, headers and envelope', async ({ r
   // No tokens in the payload.
   expect(record.raw).not.toContain(tokens.access_token);
   expect(record.raw).not.toContain(tokens.refresh_token);
+  // Default compression.type: the bundled pure-Java lz4.
+  expect(topicCodecs(TOPIC_EVENTS)).toEqual(['lz4']);
 });
 
 test('wrong password publishes LOGIN_ERROR from the inner session with the issuer as source', async ({ request }) => {
