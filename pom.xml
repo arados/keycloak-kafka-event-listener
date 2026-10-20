@@ -253,9 +253,10 @@
                 <e2e.keycloak.url>http://localhost:8080</e2e.keycloak.url>
                 <e2e.realm>kafka-demo</e2e.realm>
                 <e2e.readiness.url>${e2e.keycloak.url}/realms/${e2e.realm}/.well-known/openid-configuration</e2e.readiness.url>
-                <!-- keycloak-secure, compose profile `secure` (SASL_SSL/SCRAM broker, zstd) -->
+                <!-- keycloak-secure / -2, compose profile `secure` (production-style two-node cluster) -->
                 <e2e.readiness.secureUrl>http://localhost:8082/realms/${e2e.realm}/.well-known/openid-configuration</e2e.readiness.secureUrl>
-                <e2e.readiness.maxAttempts>90</e2e.readiness.maxAttempts>
+                <e2e.readiness.secure2Url>http://localhost:8083/realms/${e2e.realm}/.well-known/openid-configuration</e2e.readiness.secure2Url>
+                <e2e.readiness.maxAttempts>150</e2e.readiness.maxAttempts>
                 <e2e.readiness.sleepSeconds>2</e2e.readiness.sleepSeconds>
                 <e2e.exitCodeFile>${project.build.directory}/e2e-exit-code.txt</e2e.exitCodeFile>
             </properties>
@@ -302,6 +303,12 @@
                                         <exec executable="sh" failonerror="true">
                                             <arg value="-c" />
                                             <arg value="for i in $(seq 1 ${e2e.readiness.maxAttempts}); do curl -sf ${e2e.readiness.secureUrl} &gt;/dev/null 2&gt;&amp;1 &amp;&amp; echo &quot;ready after $((i*${e2e.readiness.sleepSeconds}))s&quot; &amp;&amp; exit 0; sleep ${e2e.readiness.sleepSeconds}; done; echo &quot;keycloak-secure did not become ready in time&quot;; exit 1" />
+                                        </exec>
+
+                                        <echo message="==&gt; Waiting for keycloak-secure-2 readiness at ${e2e.readiness.secure2Url}" />
+                                        <exec executable="sh" failonerror="true">
+                                            <arg value="-c" />
+                                            <arg value="for i in $(seq 1 ${e2e.readiness.maxAttempts}); do curl -sf ${e2e.readiness.secure2Url} &gt;/dev/null 2&gt;&amp;1 &amp;&amp; echo &quot;ready after $((i*${e2e.readiness.sleepSeconds}))s&quot; &amp;&amp; exit 0; sleep ${e2e.readiness.sleepSeconds}; done; echo &quot;keycloak-secure-2 did not become ready in time&quot;; exit 1" />
                                         </exec>
                                     </target>
                                 </configuration>
