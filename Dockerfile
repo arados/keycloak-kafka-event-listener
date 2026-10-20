@@ -21,5 +21,10 @@ FROM keycloak AS keycloak-zstd
 COPY --from=codecs /codecs/ /opt/keycloak/providers/
 RUN /opt/keycloak/bin/kc.sh build
 
+# Production-style build of the same: Postgres, health and metrics are build options, so the image starts with
+# `kc.sh start --optimized` like a real deployment. Used by the `secure` compose profile (a two-node cluster).
+FROM keycloak-zstd AS keycloak-prod
+RUN /opt/keycloak/bin/kc.sh build --db=postgres --health-enabled=true --metrics-enabled=true
+
 # Default target (`docker build .`): the plain image.
 FROM keycloak

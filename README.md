@@ -27,10 +27,12 @@ docker compose up --build -d
 mvn verify -P e2e   # full build + end-to-end tests
 ```
 
-`docker compose --profile secure up --build -d` adds a second Keycloak (`:8082`) publishing to a broker over
-SASL_SSL with SCRAM-SHA-512, zstd compression and `delivery-mode=outbox`, set up the way
-[TLS and SASL](#tls-and-sasl), [Compression](#compression) and [Delivery](#delivery-guarantees) describe (demo
-certificates and passwords, never for production).
+`docker compose --profile secure up --build -d` adds a production-style setup: a two-node Keycloak cluster
+(`:8082`, `:8083`; metrics on `:9002`, `:9003`) built with `kc.sh build --db=postgres` and started with
+`kc.sh start --optimized` on Postgres, publishing with `delivery-mode=outbox` and zstd to a broker that requires
+SASL_SSL with SCRAM-SHA-512, set up the way [TLS and SASL](#tls-and-sasl), [Compression](#compression) and
+[Delivery](#delivery-guarantees) describe (demo certificates and passwords, never for production). The e2e suite
+runs against both setups.
 
 ## Installation
 
@@ -352,6 +354,9 @@ Things to know:
   Keycloak's SSF support). They may change in any Keycloak minor release, so this mode is tested against the exact
   Keycloak version in [Compatibility](#compatibility); `async` mode only uses the event listener SPI.
 - The outbox gauges ([Metrics](#metrics)) are refreshed by the node that last drained.
+- Verified on a two-node cluster (`start --optimized`, Postgres, Keycloak's default `jdbc-ping` clustering):
+  both nodes write to the shared outbox, one drains at a time, and without failures every event is published
+  exactly once.
 
 ### Kafka client logs
 
@@ -366,8 +371,8 @@ Keycloak's own:
 
 | Prometheus name | Type | Labels | Meaning |
 |---|---|---|---|
-| `keycloak_kafka_events_enqueued_total` | counter | `kind` | Committed events accepted for sending |
-| `keycloak_kafka_events_sent_total` | counter | `kind`, `topic` | Events Kafka acknowledged |
+| `keycloak_kafka_events_enqueued_total` | counter | `kind` | Async: committed events accepted into the queue. Outbox: rows written (a row whose transaction later rolls back is counted too) |
+| `keycloak_kafka_events_sent_total` | counter | `kind`, `topic` | Events Kafka acknowledged (outbox: on the node that drained them; sum over nodes) |
 | `keycloak_kafka_events_failed_total` | counter | `kind`, `reason` | Send attempts that failed; `reason` is the exception's simple class name, e.g. `TimeoutException` |
 | `keycloak_kafka_events_dropped_total` | counter | `kind`, `reason` | Events not published: `queue_full`, `shutdown`, `filtered` (include/exclude options), `error` (the listener failed to prepare the event) |
 | `keycloak_kafka_events_queue_size` | gauge | — | Events waiting in the in-memory queue |
