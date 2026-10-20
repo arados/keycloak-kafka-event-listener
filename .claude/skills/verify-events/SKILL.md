@@ -33,12 +33,13 @@ admin `admin`/`admin`.
    docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
    docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
      --topic keycloak.events --from-beginning --timeout-ms 10000 \
-     --property print.key=true --property print.headers=true
+     --formatter-property print.key=true --formatter-property print.headers=true
    ```
    Repeat with `--topic keycloak.admin-events`. Pipe values through `jq` when checking envelope fields.
 4. Check against docs/PLAN.md "Envelope v1" and "Routing": key = `realmId:userId` (admin events: see plan),
    headers `kc-event-type`, `kc-realm-id`, `kc-schema-version`, no secrets/credentials in payloads,
-   admin `representation` absent unless the realm has "Include representation" on.
+   admin `representation` absent unless the realm has "Include representation" on **and** the listener has
+   `include-representation=true` (the compose stack leaves it at the default `false`).
 5. Failure-mode check (the most important property): `docker compose stop kafka`, repeat a login →
    it must still return 200 quickly (well under 1s extra); `docker compose logs keycloak | grep -i kafka`
    shows a bounded warning, not a stack trace per event. `docker compose start kafka` afterwards.

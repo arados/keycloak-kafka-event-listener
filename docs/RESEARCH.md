@@ -156,6 +156,33 @@ Source: `server-spi-private/src/main/java/org/keycloak/events/EventBuilder.java`
 - `ssf/transmitter/.../SecurityEventTokenMapper.java:1187,1207` puts `admin=true` on synthetic `Event`s it maps to
   SSF tokens; those are not dispatched to event listeners, so `admin` is not in the list.
 
+### 3.4 Transactions and listener instances (verified 2026-10-20 from 26.8.1 source)
+
+Paths relative to the Keycloak repo at tag 26.8.1. The provider's unit tests run the real
+`DefaultKeycloakTransactionManager` over a mocked session, so these behaviours are exercised.
+
+- `services/.../services/DefaultKeycloakTransactionManager.java`:
+  - `enlistAfterCompletion(tx)` (line 63) throws `IllegalStateException("Transaction already completed")` once
+    `commit()`/`rollback()` has started: `completed` is set at their start (lines 142, 204) while `isActive()`
+    stays true until their loops finish (lines 186, 228). So an event fired from another after-completion
+    transaction sees an active manager that refuses enlistment; the provider then offers the record directly.
+  - It begins the enlisted transaction only if the manager is active; otherwise `begin()` does later.
+    `AbstractKeycloakTransaction.commit()` requires `STARTED`, so a transaction enlisted into a manager that is
+    never begun would throw at commit. The provider enlists only into an active manager.
+  - `commit()` runs prepare → regular → after-completion transactions. If a regular one failed, the
+    after-completion ones are **rolled back** instead (line 167). Exceptions from after-completion commits are
+    collected and the first is **rethrown out of `commit()`** (line 188) — i.e. it would fail a request whose
+    data is already committed. Hence `commitImpl` must never throw.
+  - One manager per session; once completed it cannot be restarted.
+- `server-spi-private/.../events/EventBuilder.java:90-96` resolves listeners with
+  `session.getProvider(EventListenerProvider.class, id)`, cached per session: one instance per session for user
+  events (and one more in the inner session of error events).
+- `services/.../services/resources/admin/AdminEventBuilder.java`: `addListeners` (line 134) calls
+  `factory.create(session)` directly (line 141), once per builder, so an admin request can use several listener
+  instances of the same factory. Keycloak never calls `close()` on them (they aren't registered with the
+  session). `send()` (line 297) passes every admin event to the realm's listeners whether or not *Save admin
+  events* is on, with `includeRepresentation = realm.isAdminEventsDetailsEnabled()` (*Include representation*).
+
 ## 4. Keycloak's generic durable outbox (for the optional at-least-once mode)
 
 Added with SSF in 26.7.0 ([PR #48256](https://github.com/keycloak/keycloak/pull/48256), maintainer
@@ -308,6 +335,15 @@ the compose stack (`start-dev`) and in the built image with `start --optimized`.
 - `KafkaProducer.close(timeout)` waits up to `timeout` for in-flight batches, then force-closes (pending
   callbacks fail with a `KafkaException`) and joins its I/O thread **without** a timeout; that join is short in
   practice since the forced sender just aborts batches. `close(Duration.ZERO)` force-closes immediately.
+- Observed 2026-10-20 in the compose stack (`docker compose stop kafka`): the producer drops the cluster
+  metadata ("Rebootstrapping"), so each `send()` on our sender thread then waits the full `max.block.ms`
+  (1 s) and fails with `TimeoutException: Topic keycloak.events not present in metadata after 1000 ms`. While the
+  broker is down the sender therefore drains ~1 record/s and the queue absorbs the rest. Kafka's
+  `NetworkClient` logs a WARN per reconnect attempt (backoff ≤ 1 s); our own failure WARN is rate-limited.
+  After `docker compose start kafka` publishing resumed without intervention.
+- The broker's console consumer (apache/kafka 4.3.1) prints `HEADERS<TAB>KEY<TAB>VALUE` with
+  `print.headers`/`print.key`, and `--property` prints a deprecation notice on **stdout** — use
+  `--formatter-property`.
 
 ## 7. Reference code on this machine
 
