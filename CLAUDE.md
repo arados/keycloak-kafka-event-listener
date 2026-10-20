@@ -4,12 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Start here
 
-1. **Read [docs/PLAN.md](docs/PLAN.md)** — goals, design, open decisions (D1–D5) and the milestone checklist.
+`docs/` holds the maintainer's **local, git-ignored** working notes — never commit them (the `.gitignore`
+entry keeps them out; don't link to them from README, code or anything else that is committed). If they exist:
+
+1. **Read `docs/PLAN.md`** — goals, design, open decisions (D1–D5) and the milestone checklist.
    The SessionStart hook tells you the next unchecked task; work top-down unless the user says otherwise.
-2. **Read [docs/RESEARCH.md](docs/RESEARCH.md)** when a task touches Keycloak internals (event dispatch,
+2. **Read `docs/RESEARCH.md`** when a task touches Keycloak internals (event dispatch,
    transactions, outbox), bundled libraries, or config plumbing — it holds verified facts with sources so you
    don't have to rediscover them. Add new findings there, dated.
-3. Tick tasks in PLAN.md in the same PR that completes them. Record decisions under "Open decisions".
+3. Tick tasks in PLAN.md when the PR that completes them lands. Record decisions under "Open decisions".
+
+Anything users need (configuration, envelope, guarantees) belongs in README.md; code comments must stand on
+their own.
 
 ## Project Overview
 
@@ -36,7 +42,7 @@ especially `otp-login`'s after-commit async delivery (`enlistAfterCompletion` �
 pom.xml     — the only Maven module; maven-shade-plugin bundles kafka-clients + lz4-java (no native libs, D4); `e2e` profile
 src/        — EventListenerProvider(+Factory), config, envelope, routing, sender; unit tests
 e2e/        — Playwright tests against the docker compose stack (plain npm project, run by the `e2e` profile)
-docs/       — PLAN.md (work plan), RESEARCH.md (verified background)
+docs/       — local only, git-ignored: PLAN.md (work plan), RESEARCH.md (verified background)
 .claude/    — shared Claude Code settings, hooks, skills (see "Claude Code setup")
 ```
 

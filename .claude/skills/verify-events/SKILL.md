@@ -36,7 +36,7 @@ admin `admin`/`admin`.
      --formatter-property print.key=true --formatter-property print.headers=true
    ```
    Repeat with `--topic keycloak.admin-events`. Pipe values through `jq` when checking envelope fields.
-4. Check against docs/PLAN.md "Envelope v1" and "Routing": key = `realmId:userId` (admin events: see plan),
+4. Check against README "Envelope" and "Topics, keys and ordering": key = `realmId:userId` (admin events: see README),
    headers `kc-event-type`, `kc-realm-id`, `kc-schema-version`, no secrets/credentials in payloads,
    admin `representation` absent unless the realm has "Include representation" on **and** the listener has
    `include-representation=true` (the compose stack leaves it at the default `false`).

@@ -19,7 +19,8 @@ import org.apache.kafka.common.serialization.StringSerializer;
  *       (Kafka resolves configured classes such as SASL login/callback handlers, partitioners and
  *       interceptors through the TCCL), and is restored afterwards.</li>
  * </ul>
- * A missing zstd/snappy codec JAR (decision D4, docs/RESEARCH.md §5.1) is reported with the JAR to add.
+ * A missing zstd/snappy codec JAR (not bundled, see README "Compression") is reported with the JAR to add:
+ * Kafka itself only throws an opaque {@code NoClassDefFoundError} from the producer constructor.
  */
 public final class KafkaProducers {
 

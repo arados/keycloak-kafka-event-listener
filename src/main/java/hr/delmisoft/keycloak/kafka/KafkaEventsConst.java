@@ -12,7 +12,7 @@ import java.util.List;
  *
  * <p>No option name may end in {@code -enabled}, {@code -provider} or {@code -provider-default}:
  * Keycloak treats such SPI keys as build-time options and refuses {@code start --optimized} when they
- * are set at runtime (docs/RESEARCH.md §6.1).
+ * are set at runtime ({@code PropertyMappers.isSpiBuildTimeProperty}).
  */
 public final class KafkaEventsConst {
 

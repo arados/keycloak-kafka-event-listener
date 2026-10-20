@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SessionStart: give Claude a short orientation — branch, working-tree state, and the next
-# unchecked task from docs/PLAN.md — so a fresh session resumes where the last one stopped.
+# unchecked task from docs/PLAN.md (local, git-ignored notes; skipped when absent) — so a fresh session resumes
+# where the last one stopped.
 set -euo pipefail
 
 root="${CLAUDE_PROJECT_DIR:-$(pwd)}"
@@ -16,11 +17,14 @@ next=$(awk '
 ' "$root/docs/PLAN.md" 2>/dev/null || true)
 
 ctx="Repo state: branch=$branch, uncommitted files=$dirty, last commit: $last."
-if [[ -n "$next" ]]; then
-  ctx+=" Next unchecked task in docs/PLAN.md: $next."
-else
-  ctx+=" docs/PLAN.md has no unchecked tasks."
+if [[ -f "$root/docs/PLAN.md" ]]; then
+  if [[ -n "$next" ]]; then
+    ctx+=" Next unchecked task in docs/PLAN.md: $next."
+  else
+    ctx+=" docs/PLAN.md has no unchecked tasks."
+  fi
+  ctx+=" Read docs/PLAN.md before starting implementation work; tick tasks off there as they land."
+  ctx+=" docs/ is local and git-ignored: never commit it."
 fi
-ctx+=" Read docs/PLAN.md before starting implementation work; tick tasks off there as they land."
 
 jq -n --arg c "$ctx" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $c}}'

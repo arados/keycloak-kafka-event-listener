@@ -12,8 +12,7 @@ import org.keycloak.services.Urls;
 import org.keycloak.urls.UrlType;
 
 /**
- * Computes the CloudEvents {@code source} of an event (decision D2 in docs/PLAN.md, research in
- * docs/RESEARCH.md §3.2): the issuer URL of the event's realm, i.e. the {@code iss} Keycloak puts into that
+ * Computes the CloudEvents {@code source} of an event (README "source"): the issuer URL of the event's realm, i.e. the {@code iss} Keycloak puts into that
  * realm's tokens, {@code <frontend base>/realms/<realm name>}; {@code urn:keycloak:realm:<realmId>} when no URL
  * can be resolved.
  *

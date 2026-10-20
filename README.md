@@ -3,8 +3,8 @@
 Keycloak event listener that publishes **user events** and **admin events** to **Apache Kafka** as
 CloudEvents JSON.
 
-> **Status: pre-release (milestone M1).** Publishing works end to end and is covered by unit and e2e tests;
-> no release has been tagged yet. See [docs/PLAN.md](docs/PLAN.md) for the design and roadmap.
+> **Status: pre-release.** Publishing works end to end and is covered by unit and e2e tests;
+> no release has been tagged yet.
 
 ## Features
 
