@@ -3,8 +3,8 @@
 Keycloak event listener that publishes **user events** and **admin events** to **Apache Kafka** as
 CloudEvents JSON.
 
-> **Status: pre-release.** Publishing works end to end and is covered by unit and e2e tests;
-> no release has been tagged yet.
+> **Status: 1.0.0.** Options, delivery modes and the event envelope (`kcschemaversion: 1`) are stable: removing or
+> renaming any of them needs a new major version (see [Versioning](#versioning)).
 
 ## Features
 
@@ -36,7 +36,9 @@ runs against both setups.
 
 ## Installation
 
-1. Copy `keycloak-kafka-event-listener-<version>.jar` into `/opt/keycloak/providers/` and run `kc.sh build`
+1. Download `keycloak-kafka-event-listener-<version>.jar` from the
+   [GitHub Releases](https://github.com/arados/keycloak-kafka-event-listener/releases), copy it into
+   `/opt/keycloak/providers/` and run `kc.sh build`
    (or build your image with it, as the [Dockerfile](Dockerfile) here does).
 2. Configure at least the broker, e.g. `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS=kafka:9092`,
    and start Keycloak. All options are runtime options: changing them needs a restart, not a new `kc.sh build`.
@@ -428,6 +430,16 @@ These extract a native library to `java.io.tmpdir` on first use, so it must be w
 
 The JAR does not relocate `kafka-clients`; another provider bundling a different `kafka-clients` version in the
 same Keycloak may clash.
+
+### Versioning
+
+Versions are `MAJOR.MINOR.PATCH`, but not SemVer; the part that changes says what a release contains:
+
+- **MAJOR**: new features (options, delivery modes, envelope fields), or anything incompatible;
+- **MINOR**: built and tested against a newer Keycloak version (pick the release matching your Keycloak);
+- **PATCH**: bug and security fixes only, including dependency CVE updates.
+
+The envelope has its own version, `kcschemaversion`; it only changes when fields are removed or renamed.
 
 ## License
 
