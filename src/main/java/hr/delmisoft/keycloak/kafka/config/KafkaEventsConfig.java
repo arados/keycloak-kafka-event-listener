@@ -10,6 +10,12 @@ import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_INCLUDE_ADMIN_RES
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_INCLUDE_EVENT_TYPES;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_INCLUDE_IP_ADDRESS;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_INCLUDE_REPRESENTATION;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_BATCH_SIZE;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_DEAD_LETTER_RETENTION_MS;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_DELIVERED_RETENTION_MS;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_DRAIN_INTERVAL_MS;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_MAX_ATTEMPTS;
+import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_OUTBOX_PENDING_MAX_AGE_MS;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_QUEUE_CAPACITY;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_REDACTED_DETAIL_KEYS;
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_TOPIC_ADMIN_EVENTS;
@@ -62,6 +68,7 @@ import org.keycloak.events.EventType;
  * @param redactedDetailKeys        {@code redacted-detail-keys}, lower case
  * @param queueCapacity             {@code queue-capacity}
  * @param closeTimeout              {@code close-timeout-ms}
+ * @param outbox                    the {@code outbox-*} options (used in outbox mode only)
  * @param producerProperties        complete Kafka producer properties, including {@code bootstrap.servers};
  *                                  may contain secrets, never log them (use {@link #toString()})
  */
@@ -80,13 +87,18 @@ public record KafkaEventsConfig(
         Set<String> redactedDetailKeys,
         int queueCapacity,
         Duration closeTimeout,
+        OutboxOptions outbox,
         Map<String, String> producerProperties) {
+
+    /** Smallest {@code outbox-drain-interval-ms}. */
+    public static final long MIN_DRAIN_INTERVAL_MS = 1_000;
 
     public KafkaEventsConfig {
         Objects.requireNonNull(deliveryMode, "deliveryMode");
         Objects.requireNonNull(topicEvents, "topicEvents");
         Objects.requireNonNull(topicAdminEvents, "topicAdminEvents");
         Objects.requireNonNull(closeTimeout, "closeTimeout");
+        Objects.requireNonNull(outbox, "outbox");
         topicOverrides = Map.copyOf(topicOverrides);
         includeEventTypes = Set.copyOf(includeEventTypes);
         excludeEventTypes = Set.copyOf(excludeEventTypes);
@@ -129,6 +141,7 @@ public record KafkaEventsConfig(
                 normalized(options, CFG_REDACTED_DETAIL_KEYS, false),
                 options.positiveInt(CFG_QUEUE_CAPACITY, DEFAULT_QUEUE_CAPACITY),
                 Duration.ofMillis(options.nonNegativeLong(CFG_CLOSE_TIMEOUT_MS, DEFAULT_CLOSE_TIMEOUT_MS)),
+                outbox(options),
                 ProducerProperties.build(scope, bootstrapServers, hostname)));
     }
 
@@ -144,9 +157,38 @@ public record KafkaEventsConfig(
         }
         return switch (value.toLowerCase(Locale.ROOT)) {
             case "async" -> DeliveryMode.ASYNC;
-            case "outbox" -> throw invalid(CFG_DELIVERY_MODE, value, "outbox is not supported yet; use async");
-            default -> throw invalid(CFG_DELIVERY_MODE, value, "supported: async");
+            case "outbox" -> DeliveryMode.OUTBOX;
+            default -> throw invalid(CFG_DELIVERY_MODE, value, "supported: " + String.join(", ", DeliveryMode.names()));
         };
+    }
+
+    private static OutboxOptions outbox(OptionReader options) {
+        OutboxOptions defaults = OutboxOptions.DEFAULTS;
+        long drainIntervalMs = options.nonNegativeLong(CFG_OUTBOX_DRAIN_INTERVAL_MS,
+                defaults.drainInterval().toMillis());
+        if (drainIntervalMs < MIN_DRAIN_INTERVAL_MS) {
+            // Keycloak's cluster-wide task lock works in whole seconds.
+            throw invalid(CFG_OUTBOX_DRAIN_INTERVAL_MS, Long.toString(drainIntervalMs),
+                    "must be at least " + MIN_DRAIN_INTERVAL_MS);
+        }
+        long deadLetterRetentionMs = options.nonNegativeLong(CFG_OUTBOX_DEAD_LETTER_RETENTION_MS,
+                defaults.deadLetterRetention().toMillis());
+        long pendingMaxAgeMs = options.nonNegativeLong(CFG_OUTBOX_PENDING_MAX_AGE_MS,
+                defaults.pendingMaxAge().toMillis());
+        if (deadLetterRetentionMs > 0 && pendingMaxAgeMs > 0 && deadLetterRetentionMs <= pendingMaxAgeMs) {
+            // Both count from the event's creation: rows dead-lettered for their age would be purged at once.
+            throw invalid(CFG_OUTBOX_DEAD_LETTER_RETENTION_MS, Long.toString(deadLetterRetentionMs),
+                    "must be greater than " + CFG_OUTBOX_PENDING_MAX_AGE_MS + " (" + pendingMaxAgeMs
+                            + "), or 0 to keep dead letters forever");
+        }
+        return new OutboxOptions(
+                Duration.ofMillis(drainIntervalMs),
+                options.positiveInt(CFG_OUTBOX_BATCH_SIZE, defaults.batchSize()),
+                options.positiveInt(CFG_OUTBOX_MAX_ATTEMPTS, defaults.maxAttempts()),
+                Duration.ofMillis(options.nonNegativeLong(CFG_OUTBOX_DELIVERED_RETENTION_MS,
+                        defaults.deliveredRetention().toMillis())),
+                Duration.ofMillis(deadLetterRetentionMs),
+                Duration.ofMillis(pendingMaxAgeMs));
     }
 
     private static Set<EventType> eventTypes(OptionReader options, String key) {
@@ -211,6 +253,7 @@ public record KafkaEventsConfig(
                 + ", redactedDetailKeys=" + new TreeSet<>(redactedDetailKeys)
                 + ", queueCapacity=" + queueCapacity
                 + ", closeTimeout=" + closeTimeout
+                + ", outbox=" + outbox
                 + ", producerProperties=" + producer
                 + "]";
     }

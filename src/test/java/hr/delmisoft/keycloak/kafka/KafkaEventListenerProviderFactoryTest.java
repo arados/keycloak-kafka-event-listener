@@ -20,8 +20,12 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import hr.delmisoft.keycloak.kafka.config.KafkaEventsConfig;
 import hr.delmisoft.keycloak.kafka.config.KafkaEventsConfigException;
 import hr.delmisoft.keycloak.kafka.metrics.MicrometerEventMetrics;
+import hr.delmisoft.keycloak.kafka.outbox.InMemoryOutboxRepository;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxRuntime;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxWriter;
 import hr.delmisoft.keycloak.kafka.sender.ProducerCreationException;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.ArrayList;
@@ -53,7 +57,7 @@ class KafkaEventListenerProviderFactoryTest {
     private final KafkaEventListenerProviderFactory factory = new KafkaEventListenerProviderFactory(properties -> {
         producerProperties.add(properties);
         return producer;
-    }, () -> new MicrometerEventMetrics(registry));
+    }, () -> new MicrometerEventMetrics(registry), KafkaEventListenerProviderFactoryTest::noOutbox);
 
     @AfterEach
     void closeFactory() {
@@ -108,7 +112,7 @@ class KafkaEventListenerProviderFactoryTest {
         options.put("bootstrap-servers", "kafka:9092");
         var failing = new KafkaEventListenerProviderFactory(properties -> {
             throw new ProducerCreationException("Cannot create the Kafka producer", new IllegalStateException());
-        }, () -> new MicrometerEventMetrics(registry));
+        }, () -> new MicrometerEventMetrics(registry), KafkaEventListenerProviderFactoryTest::noOutbox);
         failing.init(scope());
 
         assertThrows(ProducerCreationException.class, () -> failing.postInit(mock(KeycloakSessionFactory.class)));
@@ -180,9 +184,47 @@ class KafkaEventListenerProviderFactoryTest {
     }
 
     @Test
+    void outboxModeWritesEventsThroughTheOutboxAndClosesIt() {
+        options.put("bootstrap-servers", "kafka:9092");
+        options.put("delivery-mode", "outbox");
+        InMemoryOutboxRepository outboxTable = new InMemoryOutboxRepository();
+        boolean[] closed = {false};
+        var outboxFactory = new KafkaEventListenerProviderFactory(properties -> producer,
+                () -> new MicrometerEventMetrics(registry), (sessionFactory, outboxProducer, config, metrics) ->
+                new OutboxRuntime() {
+                    @Override
+                    public OutboxWriter writer() {
+                        return new OutboxWriter(session -> outboxTable, metrics);
+                    }
+
+                    @Override
+                    public void close() {
+                        closed[0] = true;
+                    }
+                });
+        outboxFactory.init(scope());
+        outboxFactory.postInit(mock(KeycloakSessionFactory.class));
+        KeycloakFixture keycloak = new KeycloakFixture().begin();
+
+        outboxFactory.create(keycloak.session).onEvent(userEvent(EventType.LOGIN));
+        outboxFactory.close();
+
+        assertThat(outboxFactory.sender(), nullValue());
+        assertThat(outboxTable.entries(), hasSize(1));
+        assertThat(outboxTable.entries().get(0).eventId(), equalTo(userEvent(EventType.LOGIN).getId()));
+        assertThat(closed[0], is(true));
+        assertThat(producer.history(), empty());
+    }
+
+    @Test
     void envNameUsesTheDoubleUnderscoreForm() {
         assertThat(KafkaEventListenerProviderFactory.envName("bootstrap-servers"),
                 equalTo("KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS"));
+    }
+
+    private static OutboxRuntime noOutbox(KeycloakSessionFactory sessionFactory, Producer<String, byte[]> producer,
+            KafkaEventsConfig config, MicrometerEventMetrics metrics) {
+        throw new AssertionError("outbox mode is not configured in this test");
     }
 
     /**

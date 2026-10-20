@@ -63,6 +63,21 @@
             <version>${keycloak.version}</version>
             <scope>provided</scope>
         </dependency>
+        <!-- delivery-mode=outbox: Keycloak-internal classes (OutboxStore and its OUTBOX_ENTRY entity in model-jpa,
+             ClusterAwareScheduledTaskRunner in model-storage-private). Only outbox.KeycloakOutboxRepository and
+             outbox.KafkaOutbox touch them; re-check on every Keycloak bump (bump-keycloak skill). -->
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-model-jpa</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-model-storage-private</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Metrics: Keycloak's Micrometer global registry, exposed on its /metrics endpoint. -->
         <dependency>

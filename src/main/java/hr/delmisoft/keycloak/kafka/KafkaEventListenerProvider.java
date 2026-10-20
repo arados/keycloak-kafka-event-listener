@@ -4,6 +4,8 @@ import hr.delmisoft.keycloak.kafka.envelope.Envelope;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeContext;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeMapper;
 import hr.delmisoft.keycloak.kafka.metrics.EventMetrics;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxCodec;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxWriter;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.keycloak.events.Event;
 import org.keycloak.events.EventListenerProvider;
@@ -17,11 +19,16 @@ import org.keycloak.models.KeycloakTransactionManager;
  * {@code AdminEventBuilder} creates with {@code factory.create(session)}, so one admin request can use several
  * instances, each with its own after-completion transaction. All of them commit or roll back with the session.
  *
- * <p>{@code onEvent} does all the work that needs the session and nothing that can block: filter, compute
- * {@code source} ({@link EventSource}), map to the envelope, serialize, build the Kafka record, and buffer it in
- * a {@link PublishAfterCommitTransaction}, which this instance enlists with the session's transaction manager on
- * its first published event. When the transaction commits, the records go to the sender's bounded queue; on
- * rollback they are discarded. Kafka I/O happens on the sender thread only.
+ * <p>{@code onEvent} does all the work that needs the session and nothing that can block on Kafka: filter, compute
+ * {@code source} ({@link EventSource}), map to the envelope, serialize, build the Kafka record, then
+ * <ul>
+ *   <li>async mode: buffer it in a {@link PublishAfterCommitTransaction}, which this instance enlists with the
+ *       session's transaction manager on its first published event. When the transaction commits, the records go
+ *       to the sender's bounded queue; on rollback they are discarded. Kafka I/O happens on the sender thread
+ *       only;</li>
+ *   <li>outbox mode: insert it into Keycloak's outbox table in the same transaction ({@link OutboxWriter}); the
+ *       drainer task publishes it once committed.</li>
+ * </ul>
  *
  * <p>Dispatch paths, none of which needs special handling:
  * <ul>
@@ -63,7 +70,7 @@ public final class KafkaEventListenerProvider implements EventListenerProvider {
             }
             EventSource.Resolved realm = EventSource.resolve(session, event.getRealmId(), event.getRealmName());
             Envelope envelope = pipeline.mapper().map(event, new EnvelopeContext(realm.source(), realm.realmName()));
-            publishAfterCommit(envelope);
+            publish(envelope);
         } catch (RuntimeException | LinkageError e) {
             pipeline.failures().record(USER, "preparing user event " + (event == null ? null : event.getType()), e);
         }
@@ -79,16 +86,24 @@ public final class KafkaEventListenerProvider implements EventListenerProvider {
             EventSource.Resolved realm = EventSource.resolve(session, event.getRealmId(), event.getRealmName());
             Envelope envelope = pipeline.mapper().map(event, includeRepresentation,
                     new EnvelopeContext(realm.source(), realm.realmName()));
-            publishAfterCommit(envelope);
+            publish(envelope);
         } catch (RuntimeException | LinkageError e) {
             pipeline.failures().record(ADMIN, "preparing admin event "
                     + (event == null ? null : event.getResourceTypeAsString() + "." + event.getOperationType()), e);
         }
     }
 
-    private void publishAfterCommit(Envelope envelope) {
+    private void publish(Envelope envelope) {
         ProducerRecord<String, byte[]> record =
                 pipeline.recordFactory().create(envelope, EnvelopeMapper.toJsonBytes(envelope));
+        if (pipeline.outbox() != null) {
+            pipeline.outbox().enqueue(session, OutboxCodec.encode(envelope, record));
+        } else {
+            publishAfterCommit(record);
+        }
+    }
+
+    private void publishAfterCommit(ProducerRecord<String, byte[]> record) {
         if (transaction != null && transaction.isActive()) {
             transaction.add(record);
             return;

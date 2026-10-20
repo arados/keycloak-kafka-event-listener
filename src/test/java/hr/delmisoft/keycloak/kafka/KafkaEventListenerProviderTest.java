@@ -26,6 +26,11 @@ import hr.delmisoft.keycloak.kafka.envelope.DetailRedaction;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeMapper;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeOptions;
 import hr.delmisoft.keycloak.kafka.metrics.MicrometerEventMetrics;
+import hr.delmisoft.keycloak.kafka.outbox.InMemoryOutboxRepository;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxCodec;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxEntry;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxRow;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxWriter;
 import hr.delmisoft.keycloak.kafka.routing.EventFilter;
 import hr.delmisoft.keycloak.kafka.routing.EventRecordFactory;
 import hr.delmisoft.keycloak.kafka.routing.KeyStrategy;
@@ -46,6 +51,7 @@ import org.keycloak.events.admin.AdminEvent;
 import org.keycloak.events.admin.OperationType;
 import org.keycloak.events.admin.ResourceType;
 import org.keycloak.models.AbstractKeycloakTransaction;
+import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakTransaction;
 import org.keycloak.urls.UrlType;
 import org.keycloak.util.JsonSerialization;
@@ -59,6 +65,7 @@ class KafkaEventListenerProviderTest {
     private final ListenerFailures failures = new ListenerFailures(metrics);
 
     private RecordSink sink = published::add;
+    private OutboxWriter outbox;
     private EventFilter filter = new EventFilter(Set.of(), Set.of(), Set.of(), Set.of());
     private EnvelopeOptions options = EnvelopeOptions.DEFAULTS;
 
@@ -315,6 +322,34 @@ class KafkaEventListenerProviderTest {
         assertThat(dropped("user", "error"), equalTo(2.0));
     }
 
+    @Test
+    void outboxModeWritesTheRecordInTheDispatchingTransaction() throws IOException {
+        InMemoryOutboxRepository table = new InMemoryOutboxRepository();
+        List<KeycloakSession> sessions = new ArrayList<>();
+        outbox = new OutboxWriter(session -> {
+            sessions.add(session);
+            return table;
+        }, metrics);
+
+        provider().onEvent(userEvent(EventType.LOGIN));
+
+        assertThat("written in the request session, before its commit", sessions, contains(keycloak.session));
+        assertThat(table.entries(), hasSize(1));
+        OutboxEntry entry = table.entries().get(0);
+        assertThat(entry.eventId(), equalTo(userEvent(EventType.LOGIN).getId()));
+        assertThat(entry.realmId(), equalTo(REALM_ID));
+        assertThat(entry.type(), equalTo("org.keycloak.event.LOGIN"));
+        assertThat(entry.kind(), equalTo("user"));
+        ProducerRecord<String, byte[]> decoded = OutboxCodec.decode(new OutboxRow("row-1", entry.eventId(),
+                entry.payload(), entry.metadata(), 0, null));
+        assertThat(decoded.topic(), equalTo("keycloak.events"));
+        assertThat(decoded.key(), equalTo(REALM_ID + ":" + USER_ID));
+        assertThat(header(decoded.headers(), "kc-event-type"), equalTo("org.keycloak.event.LOGIN"));
+        assertThat(json(decoded).get("source").asText(), equalTo(ISSUER));
+        keycloak.transactions.commit();
+        assertThat("nothing goes to the async sink", published, empty());
+    }
+
     private KafkaEventListenerProvider provider() {
         return new KafkaEventListenerProvider(keycloak.session, pipeline());
     }
@@ -325,7 +360,8 @@ class KafkaEventListenerProviderTest {
                 new EnvelopeMapper(options),
                 new EventRecordFactory(new TopicRouter("keycloak.events", "keycloak.admin-events", Map.of()),
                         new KeyStrategy()),
-                record -> sink.offer(record),
+                outbox == null ? record -> sink.offer(record) : null,
+                outbox,
                 failures,
                 metrics);
     }

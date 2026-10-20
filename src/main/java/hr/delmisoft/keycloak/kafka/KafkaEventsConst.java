@@ -41,6 +41,12 @@ public final class KafkaEventsConst {
     public static final String CFG_QUEUE_CAPACITY = "queue-capacity";
     public static final String CFG_CLOSE_TIMEOUT_MS = "close-timeout-ms";
     public static final String CFG_PRODUCER_PROPERTIES_FILE = "producer-properties-file";
+    public static final String CFG_OUTBOX_DRAIN_INTERVAL_MS = "outbox-drain-interval-ms";
+    public static final String CFG_OUTBOX_BATCH_SIZE = "outbox-batch-size";
+    public static final String CFG_OUTBOX_MAX_ATTEMPTS = "outbox-max-attempts";
+    public static final String CFG_OUTBOX_DELIVERED_RETENTION_MS = "outbox-delivered-retention-ms";
+    public static final String CFG_OUTBOX_DEAD_LETTER_RETENTION_MS = "outbox-dead-letter-retention-ms";
+    public static final String CFG_OUTBOX_PENDING_MAX_AGE_MS = "outbox-pending-max-age-ms";
 
     /**
      * Prefix of the Kafka producer passthrough options: {@code producer-linger-ms} → {@code linger.ms}.
@@ -65,7 +71,13 @@ public final class KafkaEventsConst {
             CFG_DELIVERY_MODE,
             CFG_QUEUE_CAPACITY,
             CFG_CLOSE_TIMEOUT_MS,
-            CFG_PRODUCER_PROPERTIES_FILE);
+            CFG_PRODUCER_PROPERTIES_FILE,
+            CFG_OUTBOX_DRAIN_INTERVAL_MS,
+            CFG_OUTBOX_BATCH_SIZE,
+            CFG_OUTBOX_MAX_ATTEMPTS,
+            CFG_OUTBOX_DELIVERED_RETENTION_MS,
+            CFG_OUTBOX_DEAD_LETTER_RETENTION_MS,
+            CFG_OUTBOX_PENDING_MAX_AGE_MS);
 
     public static final String DEFAULT_TOPIC_EVENTS = "keycloak.events";
     public static final String DEFAULT_TOPIC_ADMIN_EVENTS = "keycloak.admin-events";

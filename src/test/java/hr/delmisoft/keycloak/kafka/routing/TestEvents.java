@@ -2,6 +2,7 @@ package hr.delmisoft.keycloak.kafka.routing;
 
 import hr.delmisoft.keycloak.kafka.config.DeliveryMode;
 import hr.delmisoft.keycloak.kafka.config.KafkaEventsConfig;
+import hr.delmisoft.keycloak.kafka.config.OutboxOptions;
 import hr.delmisoft.keycloak.kafka.envelope.Envelope;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeContext;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeMapper;
@@ -94,6 +95,7 @@ final class TestEvents {
                 Set.of(),
                 10_000,
                 Duration.ofSeconds(5),
+                OutboxOptions.DEFAULTS,
                 Map.of("bootstrap.servers", "localhost:9092"));
     }
 }

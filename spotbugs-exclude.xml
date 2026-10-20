@@ -11,4 +11,19 @@
         <Class name="hr.delmisoft.keycloak.kafka.KafkaEventListenerProvider"/>
         <Method name="&lt;init&gt;"/>
     </Match>
+
+    <!-- Same contract for the outbox repository: one instance per KeycloakSession, which it needs to reach the
+         session's EntityManager. -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+        <Class name="hr.delmisoft.keycloak.kafka.outbox.KeycloakOutboxRepository"/>
+        <Method name="&lt;init&gt;"/>
+    </Match>
+
+    <!-- The outbox hands its thread-safe, stateless OutboxWriter to every provider; sharing it is the point. -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP"/>
+        <Class name="hr.delmisoft.keycloak.kafka.outbox.KafkaOutbox"/>
+        <Method name="writer"/>
+    </Match>
 </FindBugsFilter>

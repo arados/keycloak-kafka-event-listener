@@ -4,15 +4,19 @@ import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.CFG_BOOTSTRAP_SERVERS
 import static hr.delmisoft.keycloak.kafka.KafkaEventsConst.OPTION_PREFIX;
 
 import hr.delmisoft.keycloak.kafka.config.ConfigMetadata;
+import hr.delmisoft.keycloak.kafka.config.DeliveryMode;
 import hr.delmisoft.keycloak.kafka.config.KafkaEventsConfig;
 import hr.delmisoft.keycloak.kafka.envelope.DetailRedaction;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeMapper;
 import hr.delmisoft.keycloak.kafka.envelope.EnvelopeOptions;
 import hr.delmisoft.keycloak.kafka.metrics.MicrometerEventMetrics;
+import hr.delmisoft.keycloak.kafka.outbox.KafkaOutbox;
+import hr.delmisoft.keycloak.kafka.outbox.OutboxRuntime;
 import hr.delmisoft.keycloak.kafka.routing.EventFilter;
 import hr.delmisoft.keycloak.kafka.routing.EventRecordFactory;
 import hr.delmisoft.keycloak.kafka.sender.KafkaProducers;
 import hr.delmisoft.keycloak.kafka.sender.KafkaSender;
+import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -21,6 +25,7 @@ import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.events.Event;
@@ -41,9 +46,10 @@ import org.keycloak.provider.ProviderConfigProperty;
  *       {@code KafkaEventsConfigException} (naming the option) propagates and Keycloak does not start.</li>
  *   <li>{@link #postInit}: creates the producer (this does not contact the broker, so Kafka being down never
  *       fails startup; a producer Kafka refuses to construct is a configuration error and does), registers the
- *       metrics and starts the sender thread.</li>
- *   <li>{@link #close}: stops accepting, drains the queue for at most {@code close-timeout-ms}, closes the
- *       producer, removes the metrics. Idempotent.</li>
+ *       metrics, and starts the sender thread (async mode) or schedules the outbox drainer (outbox mode).</li>
+ *   <li>{@link #close}: async mode stops accepting and drains the queue for at most {@code close-timeout-ms};
+ *       outbox mode cancels the drainer (undelivered rows stay in the outbox). Then closes the producer and
+ *       removes the metrics. Idempotent.</li>
  * </ul>
  */
 public final class KafkaEventListenerProviderFactory implements EventListenerProviderFactory {
@@ -55,30 +61,40 @@ public final class KafkaEventListenerProviderFactory implements EventListenerPro
 
     private final Function<Map<String, String>, Producer<String, byte[]>> producerFactory;
     private final Supplier<MicrometerEventMetrics> metricsFactory;
+    private final OutboxStarter outboxStarter;
 
     private KafkaEventsConfig config;
     private EventFilter filter;
     private EnvelopeMapper mapper;
     private EventRecordFactory recordFactory;
     private KafkaSender sender;
+    private OutboxRuntime outbox;
     private MicrometerEventMetrics metrics;
     private ListenerFailures failures;
 
     /** Read by request threads in {@link #create}; {@code null} = disabled. */
     private volatile ListenerPipeline pipeline;
 
+    /** Starts {@link KafkaOutbox}; replaced in tests, which have no Keycloak timer or database. */
+    @FunctionalInterface
+    interface OutboxStarter {
+        OutboxRuntime start(KeycloakSessionFactory sessionFactory, Producer<String, byte[]> producer,
+                KafkaEventsConfig config, MicrometerEventMetrics metrics);
+    }
+
     public KafkaEventListenerProviderFactory() {
-        this(KafkaProducers::create, MicrometerEventMetrics::new);
+        this(KafkaProducers::create, MicrometerEventMetrics::new, KafkaEventListenerProviderFactory::startOutbox);
     }
 
     /**
      * For tests: {@code producerFactory} replaces {@link KafkaProducers#create} (e.g. with a MockProducer),
-     * {@code metricsFactory} the global Micrometer registry.
+     * {@code metricsFactory} the global Micrometer registry, {@code outboxStarter} the outbox scheduling.
      */
     KafkaEventListenerProviderFactory(Function<Map<String, String>, Producer<String, byte[]>> producerFactory,
-            Supplier<MicrometerEventMetrics> metricsFactory) {
+            Supplier<MicrometerEventMetrics> metricsFactory, OutboxStarter outboxStarter) {
         this.producerFactory = Objects.requireNonNull(producerFactory, "producerFactory");
         this.metricsFactory = Objects.requireNonNull(metricsFactory, "metricsFactory");
+        this.outboxStarter = Objects.requireNonNull(outboxStarter, "outboxStarter");
     }
 
     @Override
@@ -106,16 +122,16 @@ public final class KafkaEventListenerProviderFactory implements EventListenerPro
                 new DetailRedaction(parsedConfig.allowedDetailKeys(), parsedConfig.redactedDetailKeys())));
         config = parsedConfig;
         LOG.infof("Kafka event listener '%s' configured: bootstrap servers %s, topics '%s' (user events) and '%s'"
-                + " (admin events), delivery mode %s, queue capacity %d", KafkaEventsConst.PROVIDER_ID,
+                + " (admin events), delivery mode %s", KafkaEventsConst.PROVIDER_ID,
                 parsedConfig.bootstrapServers(), parsedConfig.topicEvents(), parsedConfig.topicAdminEvents(),
-                parsedConfig.deliveryMode().name().toLowerCase(Locale.ROOT), parsedConfig.queueCapacity());
+                parsedConfig.deliveryMode().optionValue());
         // toString() masks sensitive producer settings.
         LOG.debugf("Kafka event listener configuration: %s", parsedConfig);
     }
 
     @Override
     public void postInit(KeycloakSessionFactory sessionFactory) {
-        if (config == null || sender != null) {
+        if (config == null || metrics != null) {
             return;
         }
         // Throws ProducerCreationException (no setting values in the message) when Kafka rejects the settings or
@@ -123,20 +139,39 @@ public final class KafkaEventListenerProviderFactory implements EventListenerPro
         Producer<String, byte[]> producer = producerFactory.apply(config.producerProperties());
         metrics = metricsFactory.get();
         failures = new ListenerFailures(metrics);
-        sender = KafkaSender.start(producer, config.queueCapacity(), config.closeTimeout(), metrics);
-        pipeline = new ListenerPipeline(filter, mapper, recordFactory, sender::offer, failures, metrics);
+        if (config.deliveryMode() == DeliveryMode.OUTBOX) {
+            outbox = outboxStarter.start(sessionFactory, producer, config, metrics);
+            pipeline = new ListenerPipeline(filter, mapper, recordFactory, null, outbox.writer(), failures, metrics);
+        } else {
+            sender = KafkaSender.start(producer, config.queueCapacity(), config.closeTimeout(), metrics);
+            pipeline = new ListenerPipeline(filter, mapper, recordFactory, sender::offer, null, failures, metrics);
+        }
+    }
+
+    private static OutboxRuntime startOutbox(KeycloakSessionFactory sessionFactory, Producer<String, byte[]> producer,
+            KafkaEventsConfig config, MicrometerEventMetrics metrics) {
+        Duration deliveryTimeout = Duration.ofMillis(
+                Long.parseLong(config.producerProperties().get(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG).trim()));
+        return KafkaOutbox.start(sessionFactory, producer, config.outbox(), deliveryTimeout, config.closeTimeout(),
+                metrics);
     }
 
     @Override
     public void close() {
         pipeline = null;
-        KafkaSender current = sender;
-        sender = null;
-        if (current == null) {
+        if (metrics == null) {
             return;
         }
-        current.close();
+        if (sender != null) {
+            sender.close();
+            sender = null;
+        }
+        if (outbox != null) {
+            outbox.close();
+            outbox = null;
+        }
         metrics.close();
+        metrics = null;
         long failed = failures.count();
         if (failed > 0) {
             LOG.infof("Kafka event listener: %d events could not be prepared for publishing since startup", failed);
