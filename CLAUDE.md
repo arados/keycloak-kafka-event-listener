@@ -63,7 +63,7 @@ jar tf target/keycloak-kafka-event-listener-*.jar | less        # Inspect what t
 
 ```bash
 docker compose up --build -d          # Keycloak + Kafka (rebuilds the plugin JAR)
-docker compose --profile secure up --build -d   # + kafka-secure / keycloak-secure (:8082): SASL_SSL, SCRAM, zstd
+docker compose --profile secure up --build -d   # + production-style cluster (:8082, :8083): Postgres, outbox, SASL_SSL, zstd
 docker compose --profile ui up -d     # + kafka-ui on http://localhost:8081
 docker compose --profile secure down -v   # Stop and wipe everything (fresh realm import next time)
 node e2e/load/load.js 1000 30         # Load sanity: ~1k events/s, Kafka up vs. stopped (restarts it after)
@@ -83,14 +83,16 @@ docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstra
 - Listener config is passed as env `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__<KEY>` (see docker-compose.yml). The
   main Keycloak routes LOGOUT to `keycloak.events.{realmName}.logout` and filters out `USER_INFO_REQUEST` and
   `REALM_ROLE` admin events (exercised by `routing.spec.js`)
-- `secure` profile: `secure-secrets` (one-shot, `docker/secure/generate-secrets.sh`) writes a self-signed broker
-  cert, truststore and `kafka-client.properties` into a volume; `kafka-secure` has SASL_SSL on `:9095` (SCRAM
-  user created by `kafka-secure-init`) plus in-network PLAINTEXT `:9092` for the console tools;
-  `keycloak-secure` (Dockerfile target `keycloak-zstd`, which adds zstd-jni to `providers/`) publishes over
-  SASL_SSL with `compression.type=zstd` and `delivery-mode=outbox` (`outbox-kafka-down.spec.js` stops
-  `kafka-secure`, its own Playwright project like `kafka-down.spec.js`)
+- `secure` profile (production-style): `secure-secrets` (one-shot, `docker/secure/generate-secrets.sh`) writes a
+  self-signed broker cert, truststore and `kafka-client.properties` into a volume; `kafka-secure` has SASL_SSL on
+  `:9095` (SCRAM user created by `kafka-secure-init`) plus in-network PLAINTEXT `:9092` for the console tools;
+  `postgres-secure`; `keycloak-secure` (:8082, metrics :9002) and `keycloak-secure-2` (:8083, :9003) run
+  `start --optimized` from Dockerfile target `keycloak-prod` (zstd-jni in `providers/`, `--db=postgres`, health,
+  metrics) as a jdbc-ping cluster, publishing over SASL_SSL with zstd and `delivery-mode=outbox`
+  (`outbox-kafka-down.spec.js` stops `kafka-secure`, its own Playwright project like `kafka-down.spec.js`).
+  Node 1 takes ~1–2 min to start on a fresh database
 - The user also runs an unrelated `kafka` container on host ports 9092/29092 — don't touch it; this stack
-  only publishes 8080, 9000, 9094 (and 8081 with the `ui` profile)
+  only publishes 8080, 9000, 9094 (+ 8082, 8083, 9002, 9003 with `secure`, 8081 with `ui`)
 
 Use the **`verify-events`** skill to exercise the stack end to end.
 

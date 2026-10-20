@@ -10,12 +10,18 @@ const COMPOSE_DIR = path.resolve(__dirname, '..', '..');
 const METRICS_URL = 'http://localhost:9000/metrics';
 
 /**
- * The two Keycloak + Kafka pairs of docker-compose.yml. Every helper takes an optional `stack` (default MAIN).
- * SECURE (compose profile `secure`) publishes over SASL_SSL/SCRAM with zstd; its broker's in-network PLAINTEXT
- * listener is only used by the console tools here.
+ * The Keycloak + Kafka setups of docker-compose.yml. Every helper takes an optional `stack` (default MAIN).
+ * SECURE and SECURE_2 (compose profile `secure`) are the two nodes of a production-style cluster
+ * (`start --optimized`, Postgres) publishing over SASL_SSL/SCRAM with zstd and delivery-mode=outbox; their broker's
+ * in-network PLAINTEXT listener is only used by the console tools here.
  */
-const MAIN = { keycloakUrl: KEYCLOAK_URL, kafkaService: 'kafka' };
-const SECURE = { keycloakUrl: 'http://localhost:8082', kafkaService: 'kafka-secure' };
+const MAIN = { keycloakUrl: KEYCLOAK_URL, kafkaService: 'kafka', metricsUrl: 'http://localhost:9000/metrics' };
+const SECURE = {
+  keycloakUrl: 'http://localhost:8082', kafkaService: 'kafka-secure', metricsUrl: 'http://localhost:9002/metrics',
+};
+const SECURE_2 = {
+  keycloakUrl: 'http://localhost:8083', kafkaService: 'kafka-secure', metricsUrl: 'http://localhost:9003/metrics',
+};
 
 /** Admin access token from the master realm (admin/admin from docker-compose.yml). */
 async function adminToken(request, stack = MAIN) {
@@ -138,11 +144,11 @@ async function startKafka({ timeoutMs = 90000, stack = MAIN } = {}) {
 }
 
 /**
- * Sum of the Prometheus samples of `name` whose labels include every entry of `labels`, scraped from the main
- * Keycloak's management interface (metrics are enabled in docker-compose.yml).
+ * Sum of the Prometheus samples of `name` whose labels include every entry of `labels`, scraped from the stack's
+ * management interface (metrics are enabled in docker-compose.yml).
  */
-async function metricValue(request, name, labels = {}) {
-  const res = await request.get(METRICS_URL);
+async function metricValue(request, name, labels = {}, stack = MAIN) {
+  const res = await request.get(stack.metricsUrl);
   if (!res.ok()) throw new Error(`metrics scrape failed: ${res.status()}`);
   let total = 0;
   for (const line of (await res.text()).split('\n')) {
@@ -165,7 +171,7 @@ function topicCodecs(topic, stack = MAIN) {
 }
 
 module.exports = {
-  KEYCLOAK_URL, REALM, CLIENT_ID, TOPIC_EVENTS, TOPIC_ADMIN_EVENTS, METRICS_URL, MAIN, SECURE,
+  KEYCLOAK_URL, REALM, CLIENT_ID, TOPIC_EVENTS, TOPIC_ADMIN_EVENTS, METRICS_URL, MAIN, SECURE, SECURE_2,
   adminToken, passwordLogin, demoRealm, decodeJwt, consumeTopic, waitForRecord, stopKafka, startKafka, topicCodecs,
   metricValue,
 };
