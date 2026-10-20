@@ -36,11 +36,6 @@ final class PublishAfterCommitTransaction extends AbstractKeycloakTransaction {
         records.add(record);
     }
 
-    /** For tests: records waiting for the commit. */
-    int size() {
-        return records.size();
-    }
-
     @Override
     protected void commitImpl() {
         // No session access here, and no blocking: offer() only appends to the sender's bounded queue.

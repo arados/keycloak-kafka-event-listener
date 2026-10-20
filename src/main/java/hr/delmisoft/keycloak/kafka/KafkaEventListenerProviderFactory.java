@@ -138,11 +138,6 @@ public final class KafkaEventListenerProviderFactory implements EventListenerPro
         return sender;
     }
 
-    /** For tests. */
-    ListenerFailures failures() {
-        return failures;
-    }
-
     /** {@code bootstrap-servers} → {@code KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__BOOTSTRAP_SERVERS}. */
     static String envName(String key) {
         return "KC_" + (OPTION_PREFIX + key).toUpperCase(Locale.ROOT).replace('-', '_');
