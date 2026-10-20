@@ -62,8 +62,10 @@ jar tf target/keycloak-kafka-event-listener-*.jar | less        # Inspect what t
 
 ```bash
 docker compose up --build -d          # Keycloak + Kafka (rebuilds the plugin JAR)
+docker compose --profile secure up --build -d   # + kafka-secure / keycloak-secure (:8082): SASL_SSL, SCRAM, zstd
 docker compose --profile ui up -d     # + kafka-ui on http://localhost:8081
-docker compose down -v                # Stop and wipe (fresh realm import next time)
+docker compose --profile secure down -v   # Stop and wipe everything (fresh realm import next time)
+node e2e/load/load.js 1000 30         # Load sanity: ~1k events/s, Kafka up vs. stopped (restarts it after)
 docker compose logs keycloak          # Keycloak logs (listener warnings show here)
 docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
   --topic keycloak.events --from-beginning --timeout-ms 10000 \
@@ -75,9 +77,16 @@ docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstra
 - Demo realm `kafka-demo`: user `testuser` / `password`, public client `kafka-demo-client` (direct grants on),
   events + admin events enabled, listeners `jboss-logging`, `kafka-events`
 - Kafka: `kafka:9092` inside the compose network, `localhost:9094` from the host
-- A one-shot `kafka-init` service creates `keycloak.events` and `keycloak.admin-events` (3 partitions) before
-  Keycloak starts; other topics (custom templates) are auto-created by the broker
-- Listener config is passed as env `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__<KEY>` (see docker-compose.yml)
+- A one-shot `kafka-init` service creates `keycloak.events`, `keycloak.admin-events` and
+  `keycloak.events.kafka-demo.logout` (3 partitions) before Keycloak starts; other topics are auto-created
+- Listener config is passed as env `KC_SPI_EVENTS_LISTENER__KAFKA_EVENTS__<KEY>` (see docker-compose.yml). The
+  main Keycloak routes LOGOUT to `keycloak.events.{realmName}.logout` and filters out `USER_INFO_REQUEST` and
+  `REALM_ROLE` admin events (exercised by `routing.spec.js`)
+- `secure` profile: `secure-secrets` (one-shot, `docker/secure/generate-secrets.sh`) writes a self-signed broker
+  cert, truststore and `kafka-client.properties` into a volume; `kafka-secure` has SASL_SSL on `:9095` (SCRAM
+  user created by `kafka-secure-init`) plus in-network PLAINTEXT `:9092` for the console tools;
+  `keycloak-secure` (Dockerfile target `keycloak-zstd`, which adds zstd-jni to `providers/`) publishes over
+  SASL_SSL with `compression.type=zstd`
 - The user also runs an unrelated `kafka` container on host ports 9092/29092 — don't touch it; this stack
   only publishes 8080, 9000, 9094 (and 8081 with the `ui` profile)
 
@@ -124,12 +133,15 @@ supplier) so no test needs a broker. Envelope tests compare against golden JSON 
 **E2E tests** (`e2e/tests/*.spec.js`): Playwright test runner (mostly its `request` API; Chromium installed for
 browser-flow tests). `helpers.js` provides `adminToken`, `passwordLogin`, `demoRealm` (id + issuer),
 `decodeJwt`, `consumeTopic(topic)` / `waitForRecord(topic, predicate)`, which run the broker's console consumer
-inside the `kafka` container — no Node Kafka client dependency — and `stopKafka`/`startKafka`. Match records by
+inside the `kafka` container — no Node Kafka client dependency — `stopKafka`/`startKafka`, `topicCodecs` (batch
+compression via `kafka-dump-log.sh`) and `metricValue` (scrapes `:9000/metrics`). Each takes an optional stack,
+`MAIN` (default) or `SECURE`. The suite needs the `secure` profile up. Match records by
 something unique to the test (session id, new user id, unseen event id): topics keep earlier runs' records.
 `kafka-down.spec.js` stops the broker, so it is its own Playwright project that depends on the main one (runs
 last).
-`mvn verify -P e2e` manages the docker lifecycle exactly like keycloak-otp (antrun: down → up --build → wait →
-npm ci → playwright → down; exit code recorded in `target/e2e-exit-code.txt`).
+`mvn verify -P e2e` manages the docker lifecycle exactly like keycloak-otp, always with `--profile secure`
+(antrun: down → up --build → wait for both Keycloaks → npm ci → playwright → down; exit code recorded in
+`target/e2e-exit-code.txt`).
 
 ## CI Pipeline
 
